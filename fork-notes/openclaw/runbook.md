@@ -184,6 +184,22 @@ openclaw mcp status --verbose
   "not connected") until OpenClaw recycles the expired MCP session. `openclaw mcp reload` does not prevent it.
   The workspace AGENTS.md tells Dronk to retry up to 3 times.
 
+## Projects on the mini
+
+- `~/Projects/<path>` mirrors the MacBook's `~/Downloads/Projects/<path>`: all 145 git repos (2026-11-12),
+  each added as a T3 project titled by its folder name. Dronk finds them with `t3_project_list`.
+- `ops/transfer-repos.sh` (run on the MacBook) streams a `git bundle --all` of each repo over SSH and clones it
+  on the mini, so local branches and unpushed commits come along and nothing is pushed to GitHub. It then
+  points `origin` at GitHub, fetches, sets upstreams, and pulls LFS files. Existing clones are skipped, so it
+  can be rerun with a list of new repos: `zsh transfer-repos.sh list.txt` (one relative path per line), then
+  `t3 project add --base-dir ~/.t3 --title <name> ~/Projects/<path>` on the mini.
+- Shallow repos can't be bundled (OF-Scraper, ai-website-cloner-template): those were cloned from GitHub.
+- Untracked `.env*` files (63) were copied with mode 600. Uncommitted MacBook changes were not copied.
+- Three repos have no remote and exist only on the MacBook and the mini: `Website/Como/configurator`,
+  `Website/vional.com/vional-admin`, `skills/supervisor-shunt`.
+- Dependencies (`node_modules`, venvs) are not installed; install them per project when needed.
+- From now on there are two working copies of each repo. Commit and push on one machine, pull on the other.
+
 ## Dronk memory search (local embeddings)
 
 - `memory.search.provider` is `local` (2026-11-12): plugin `@openclaw/llama-cpp-provider`, embedding-only
