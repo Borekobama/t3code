@@ -84,6 +84,26 @@ reported accounts, refresh provider status, and confirm the second instance has
 its own shadow path and login. A shadow-home conflict usually means the directory
 contains a copied Codex setup. Use a fresh shadow directory and sign in again.
 
+### Switch accounts on usage limits automatically
+
+Turn on **Switch Codex accounts on usage limits** in Settings > Threads > Usage
+limits. It is off by default. When it is on, T3 Code moves a Codex thread to
+another signed-in Codex instance that shares its Codex home:
+
+- Before a turn starts, when the current account has used 99% or more of its
+  5-hour or weekly window and the window has not reset yet.
+- During a turn, when Codex stops on a usage limit. T3 Code then continues the
+  interrupted turn on the other account.
+
+T3 Code picks the account with the most usage left in both windows. It skips
+accounts that are disabled, signed out, or also at 99%. After a usage-limit stop
+it also tries accounts that have not reported usage yet. The thread shows a
+notice such as "Switched Codex account: Work → Personal (usage limit reached)".
+The switch also overrides an exhausted account that you picked yourself. When
+no account qualifies, the thread waits for the reset as before. A running turn
+is never moved, and a thread whose session still runs background work stays on
+its account.
+
 ## Answer questions while Codex works
 
 Codex can ask a question and keep working. Answer it in the thread's question

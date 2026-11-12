@@ -503,6 +503,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.autoResumeLimitedThreads !== DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads
       ? ["Resume after usage limits"]
       : []),
+    ...(settings.autoSwitchCodexAccounts !== DEFAULT_UNIFIED_SETTINGS.autoSwitchCodexAccounts
+      ? ["Switch Codex accounts on usage limits"]
+      : []),
     ...(settings.snoozeLimitedThreads !== DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads
       ? ["Snooze until limits reset"]
       : []),
@@ -672,6 +675,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarAutoSettleKeepPullRequests: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleKeepPullRequests,
       sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
       autoResumeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads,
+      autoSwitchCodexAccounts: DEFAULT_UNIFIED_SETTINGS.autoSwitchCodexAccounts,
       snoozeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads,
       snoozePresets: DEFAULT_UNIFIED_SETTINGS.snoozePresets,
       responseStreamingMode: DEFAULT_UNIFIED_SETTINGS.responseStreamingMode,
@@ -1842,6 +1846,22 @@ export function ThreadsSettingsPanel() {
                 updateSettings({ autoResumeLimitedThreads: Boolean(checked) })
               }
               aria-label="Resume after usage limits"
+            />
+          }
+        />
+        <SettingsRow
+          serverScoped
+          {...searchableSetting("auto-switch-codex-accounts")}
+          description="When a Codex account reaches a usage limit, continue on another signed-in Codex account that shares its Codex home. This also overrides an exhausted account you picked yourself."
+          settingKeys={["autoSwitchCodexAccounts"]}
+          control={
+            <ScopedSwitch
+              settingKeys={["autoSwitchCodexAccounts"]}
+              checked={settings.autoSwitchCodexAccounts}
+              onCheckedChange={(checked) =>
+                updateSettings({ autoSwitchCodexAccounts: Boolean(checked) })
+              }
+              aria-label="Switch Codex accounts on usage limits"
             />
           }
         />

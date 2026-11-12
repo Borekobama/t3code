@@ -195,7 +195,36 @@ it.layer(layerTest)("CodexDriver", (it) => {
             CodexAdapterV2.CodexAppServerClientFactory.of({
               open: (launch) =>
                 Effect.sync(() => launches.push(launch)).pipe(
-                  Effect.andThen(Effect.die("The fixture stops after recording the launch")),
+                  // The fixture app-server only reports the account's 5-hour window.
+                  Effect.as(
+                    new Proxy(
+                      {},
+                      {
+                        get: (_client, key) =>
+                          key === "awaitTermination"
+                            ? Effect.never
+                            : key === "handleServerNotification"
+                              ? (
+                                  method: string,
+                                  handler: (payload: unknown) => Effect.Effect<void>,
+                                ) =>
+                                  method === "account/rateLimits/updated"
+                                    ? handler({
+                                        rateLimits: {
+                                          limitId: "codex",
+                                          primary: {
+                                            usedPercent: 99,
+                                            resetsAt: 2_000_000_000,
+                                            windowDurationMins: 300,
+                                          },
+                                          secondary: null,
+                                        },
+                                      })
+                                    : Effect.void
+                              : () => Effect.void,
+                      },
+                    ) as never,
+                  ),
                 ),
             }),
           ),
@@ -289,6 +318,14 @@ it.layer(layerTest)("CodexDriver", (it) => {
         expect(launch.settings.launchArgs).not.toContain("dummy-owned-access");
         expect(launch.environment.OPENAI_API_KEY).toBeUndefined();
         expect(launch.environment.CODEX_HOME).toBe(launch.settings.homePath);
+        // Probes cannot read ChatGPT usage, so the session's reading replaces the placeholder
+        // and survives the next probe.
+        const reading = (yield* instance.snapshot.getSnapshot).usageLimits;
+        expect(reading?.windows.map((window) => [window.kind, window.usedPercent])).toEqual([
+          ["session", 99],
+        ]);
+        expect(reading?.unavailable).toBeUndefined();
+        expect((yield* instance.snapshot.refresh).usageLimits?.windows).toEqual(reading?.windows);
         const before = yield* instance.auth!.subscribe("test-owner").pipe(Stream.runHead);
         expect(Option.getOrThrow(before).phase).toBe("idle");
         yield* instance.auth!.logout(Effect.void);
@@ -297,6 +334,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
         expect(after.auth.email).toBeUndefined();
         expect(after.installed).toBe(true);
         expect(after.models).toEqual([]);
+        expect(after.usageLimits?.windows ?? []).toEqual([]);
         expect(Option.isNone(yield* store.get)).toBe(true);
         const signedOutScan = yield* instance.snapshotForCwd!(serverConfig.stateDir);
         expect(signedOutScan.skills).toEqual([]);
