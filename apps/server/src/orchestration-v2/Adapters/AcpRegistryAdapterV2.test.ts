@@ -447,6 +447,35 @@ describe("AcpRegistryAdapterV2", () => {
     assert.include(rejected.message, "Request rejected.");
     assert.notInclude(rejected.message, "private-key");
     assert.notInclude(rejected.message, "token=secret");
+    // OpenClaw's ACP bridge (2026.11.3) answers a prompt this way while its Gateway is down.
+    const details = "gateway not connected";
+    assert.deepEqual(
+      acpRegistryPromptFailure(
+        "",
+        new EffectAcpErrors.AcpRequestError({
+          code: -32603,
+          errorMessage: "Internal error",
+          data: { details: `${details}\n    at GatewayClient.request (token=private)` },
+        }),
+      ),
+      {
+        class: "provider_error",
+        message: `Internal error: ${details}`,
+        code: "-32603",
+        retryable: null,
+      },
+    );
+    assert.equal(
+      acpRegistryPromptFailure(
+        "",
+        new EffectAcpErrors.AcpRequestError({
+          code: -32603,
+          errorMessage: `Request failed: ${details}`,
+          data: { details },
+        }),
+      ).message,
+      `Request failed: ${details}`,
+    );
   });
 
   describe("the agent's own pickers", () => {
@@ -1441,6 +1470,116 @@ describe("AcpRegistryAdapterV2", () => {
         assert.equal(JSON.stringify(prompts[0]).includes("acp-mcp-call"), exposesMcp);
       }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
+
+  describe("an OpenClaw-style local command that cannot start", () => {
+    const openSessionFailure = Effect.fn("openSessionFailure")(function* (
+      spawn: { readonly command: string; readonly args: ReadonlyArray<string> },
+      env: Record<string, string> = {},
+    ) {
+      const instanceId = ProviderInstanceId.make("acp-local-start-failure");
+      const threadId = ThreadId.make("thread-acp-local-start-failure");
+      const adapter = yield* makeAcpRegistryAdapterV2({
+        selfInvocation: yield* resolveSelfInvocation(),
+        instanceId,
+        settings: yield* decodeAcpRegistryAdapterSettings({
+          source: "local",
+          commandPath: "openclaw",
+          commandArgs: ["acp"],
+          sessionMcp: "none",
+        }),
+        environment: {},
+      }).pipe(
+        Effect.provide(
+          Layer.mock(AcpRegistrySupport.AcpRegistryCatalog)({
+            resolve: () =>
+              Effect.succeed({ distribution: "local" as const, spawn: { ...spawn, env } }),
+          }),
+        ),
+      );
+      const modelSelection = { instanceId, model: "default" } as const;
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const exit = yield* Effect.exit(
+        adapter
+          .openSession({
+            threadId,
+            providerSessionId: ProviderSessionId.make("session-acp-local-start-failure"),
+            modelSelection,
+            runtimePolicy,
+          })
+          .pipe(
+            Effect.flatMap((runtime) =>
+              runtime.ensureThread({ threadId, modelSelection, runtimePolicy }),
+            ),
+          ),
+      );
+      if (!Exit.isFailure(exit)) return assert.fail("the session must not open");
+      return makeProviderFailure({ cause: exit.cause }).message;
+    });
+
+    it.effect("says when its executable is missing", () =>
+      Effect.gen(function* () {
+        assert.equal(
+          yield* openSessionFailure({ command: "/nonexistent-t3-test/openclaw", args: ["acp"] }),
+          "The provider session could not be opened: the provider executable was not found. Check the executable path in the provider settings, then retry the turn.",
+        );
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
+    );
+
+    it.effect("shows the reason it wrote to stderr before exiting ahead of initialize", () =>
+      Effect.gen(function* () {
+        // `openclaw acp` with its Gateway down (2026.11.3): no stdout, one stderr line, exit 1.
+        const message = yield* openSessionFailure({
+          command: process.execPath,
+          args: [
+            "-e",
+            "process.stderr.write('ACP bridge failed: connect ECONNREFUSED 127.0.0.1:18789\\n'); process.exit(1)",
+          ],
+        });
+        assert.include(message, "(ACP bridge failed: connect ECONNREFUSED 127.0.0.1:18789)");
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
+    );
+
+    it.effect("fails instead of waiting when it writes malformed output", () =>
+      Effect.gen(function* () {
+        // e.g. `openclaw` without `acp` prints its help text.
+        assert.equal(
+          yield* openSessionFailure({
+            command: process.execPath,
+            args: [
+              "-e",
+              "process.stdout.write('Usage: openclaw token=private\\n'); setInterval(() => {}, 1000)",
+            ],
+          }),
+          "The provider session could not be opened: the provider wrote output that is not ACP. Check that the command and its arguments start an ACP agent, then retry the turn.",
+        );
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
+    );
+
+    it.effect("shows why the agent rejected the session", () =>
+      Effect.gen(function* () {
+        const details =
+          "ACP bridge mode does not support per-session MCP servers. Configure MCP on the OpenClaw gateway or agent instead.";
+        assert.equal(
+          yield* openSessionFailure(
+            {
+              command: process.execPath,
+              args: [
+                yield* (yield* Path.Path).fromFileUrl(
+                  new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+                ),
+              ],
+            },
+            { T3_ACP_NEW_SESSION_ERROR_DATA: JSON.stringify({ details }) },
+          ),
+          `The provider session could not be opened: ${details}`,
+        );
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
+    );
+  });
 
   it.effect.each(["before", "after"] as const)(
     "reconciles a full prompt echo %s acknowledgment",

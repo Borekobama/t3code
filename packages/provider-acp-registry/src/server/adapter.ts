@@ -46,7 +46,7 @@ import { makeAcpNativeLoggerFactory } from "@t3tools/provider-acp/server/nativeL
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import { acpRequestErrorDetail, makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import {
   ProviderAdapterDriverCreateError,
   type ProviderAdapterDriver,
@@ -114,12 +114,20 @@ export function registerMistralVibeAcpExtensions(context: AcpAdapterV2ExtensionC
   );
 }
 
+/** The agent's message, plus the `data.details` reason a generic "Internal error" hides. */
+function acpRequestErrorMessage(error: EffectAcpErrors.AcpRequestError): string {
+  const detail = acpRequestErrorDetail(error.data);
+  return detail === undefined || error.errorMessage.includes(detail)
+    ? error.errorMessage
+    : `${error.errorMessage}: ${detail}`;
+}
+
 export function acpRegistryPromptFailure(agentId: string, cause: unknown) {
   return makeProviderFailure({
     cause,
     ...(isAcpRequestError(cause)
       ? {
-          message: cause.errorMessage,
+          message: acpRequestErrorMessage(cause),
           code: String(cause.code),
           class:
             agentId === "mistral-vibe" && cause.code === MISTRAL_VIBE_RATE_LIMITED

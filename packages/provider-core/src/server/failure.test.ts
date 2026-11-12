@@ -139,6 +139,91 @@ it("names how the provider process exited and the stage it failed in, without it
   );
 });
 
+const sessionOpenFailure = (cause: unknown) =>
+  Cause.fail(
+    new ProviderAdapter.ProviderAdapterOpenSessionError({
+      driver: ProviderDriverKind.make("acpRegistry"),
+      providerSessionId: ProviderSessionId.make("provider-session:reason"),
+      cause,
+    }),
+  );
+const GENERIC_OPEN_FAILURE =
+  "The provider session could not be opened. Check that the provider is installed and signed in, then retry the turn.";
+
+it("names the last error line an exited provider wrote to stderr, bounded and redacted", () => {
+  const exited = (stderr: string) =>
+    makeProviderFailure({
+      cause: sessionOpenFailure({ _tag: "AcpProcessExitedError", code: 1, stderr }),
+    }).message;
+  assert.equal(
+    exited("starting bridge\nACP bridge failed: connect ECONNREFUSED 127.0.0.1:18789\n"),
+    "The provider session could not be opened: the provider process exited with code 1 (ACP bridge failed: connect ECONNREFUSED 127.0.0.1:18789). Check the server logs for the provider's output, then retry the turn.",
+  );
+  const secret = exited(
+    "Error: login failed token=stderr-secret at https://user:pw@gateway.test/ws?code=abc\nbye",
+  );
+  assert.include(secret, "(Error: login failed token=[REDACTED] at https://gateway.test/ws)");
+  assert.notInclude(secret, "stderr-secret");
+  assert.notInclude(secret, "code=abc");
+  const long = exited(`Error: ${"x".repeat(2_000)}`);
+  assert.isBelow(long.length, 500);
+  assert.include(long, "…)");
+  assert.equal(
+    exited("Welcome to the agent\nprompt: summarize my notes"),
+    "The provider session could not be opened: the provider process exited with code 1. Check the server logs for the provider's output, then retry the turn.",
+  );
+});
+
+it("shows the reason an ACP agent put in data.details behind a generic error", () => {
+  const rejected = (data: unknown) =>
+    makeProviderFailure({
+      cause: sessionOpenFailure({
+        _tag: "AcpRequestError",
+        code: -32603,
+        errorMessage: "Internal error",
+        ...(data === undefined ? {} : { data }),
+      }),
+    }).message;
+  assert.equal(
+    rejected({
+      details:
+        "ACP bridge mode does not support per-session MCP servers. Configure MCP on the OpenClaw gateway or agent instead.",
+    }),
+    "The provider session could not be opened: ACP bridge mode does not support per-session MCP servers. Configure MCP on the OpenClaw gateway or agent instead.",
+  );
+  assert.equal(
+    rejected({ details: "\nGateway closed: Bearer leaked-secret\n    at Socket.onClose" }),
+    "The provider session could not be opened: Gateway closed: Bearer [REDACTED]",
+  );
+  assert.equal(
+    makeProviderFailure({
+      cause: { _tag: "AcpRequestError", errorMessage: "x", data: { details: "Gateway closed" } },
+    }).message,
+    "The agent reported an error: Gateway closed",
+  );
+  for (const data of [undefined, { details: { stack: "private" } }, { details: "  " }, "text"]) {
+    assert.equal(rejected(data), GENERIC_OPEN_FAILURE);
+  }
+});
+
+it("says when the provider executable does not exist", () => {
+  const spawnFailure = (cause: unknown) =>
+    makeProviderFailure({
+      cause: sessionOpenFailure({ _tag: "AcpSpawnError", command: "/private/bin/agent", cause }),
+    }).message;
+  const missing =
+    "The provider session could not be opened: the provider executable was not found. Check the executable path in the provider settings, then retry the turn.";
+  assert.equal(
+    spawnFailure({ _tag: "PlatformError", reason: { _tag: "NotFound", method: "spawn" } }),
+    missing,
+  );
+  assert.equal(spawnFailure({ cause: { code: "ENOENT" } }), missing);
+  assert.equal(
+    spawnFailure({ _tag: "PlatformError", reason: { _tag: "PermissionDenied" } }),
+    GENERIC_OPEN_FAILURE,
+  );
+});
+
 it("keeps unrecognized reasons and provider text out of category messages", () => {
   for (const cause of [
     "Private launch command",

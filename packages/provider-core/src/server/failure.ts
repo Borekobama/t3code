@@ -144,10 +144,34 @@ function curatedCauseMessages(cause: unknown): {
           break;
         }
         case "AcpProcessExitedError": {
-          const exit = `provider process exited${processExitStatus(cause)}`;
+          const stderr = stderrErrorLine((cause as Record<string, unknown>).stderr);
+          const exit = `provider process exited${processExitStatus(cause)}${stderr === undefined ? "" : ` (${stderr})`}`;
           const stage = category === undefined ? `The ${exit}` : `${category.summary}: the ${exit}`;
           return {
             known: `${stage}. Check the server logs for the provider's output, then retry the turn.`,
+            category: categoryMessage(),
+          };
+        }
+        case "AcpSpawnError": {
+          if (!isMissingExecutable((cause as Record<string, unknown>).cause)) break;
+          const missing = "the provider executable was not found";
+          return {
+            known: `${category === undefined ? "The provider could not start" : category.summary}: ${missing}. Check the executable path in the provider settings, then retry the turn.`,
+            category: categoryMessage(),
+          };
+        }
+        case "AcpProtocolParseError": {
+          if ((cause as Record<string, unknown>).operation !== "decode-wire-message") break;
+          return {
+            known: `${category === undefined ? "The provider failed" : category.summary}: the provider wrote output that is not ACP. Check that the command and its arguments start an ACP agent, then retry the turn.`,
+            category: categoryMessage(),
+          };
+        }
+        case "AcpRequestError": {
+          const detail = acpRequestErrorDetail((cause as Record<string, unknown>).data);
+          if (detail === undefined) break;
+          return {
+            known: `${category === undefined ? "The agent reported an error" : category.summary}: ${detail}`,
             category: categoryMessage(),
           };
         }
@@ -188,6 +212,60 @@ function processExitStatus(exited: object): string {
     return ` after signal ${signal}`;
   }
   return typeof code === "number" && Number.isSafeInteger(code) ? ` with code ${code}` : "";
+}
+
+const MAX_PROVIDER_REASON_LENGTH = 300;
+const ERROR_WORD =
+  /\b(?:error|failed|failure|fatal|refused|denied|cannot|unable|invalid|not found|not supported|does not support)\b/iu;
+const ERRNO_CODE = /\bE(?:CONN|NO|ADDR|ACCES|PERM|TIMEDOUT|PIPE|HOST|NET)[A-Z]*\b/u;
+
+function reasonLine(line: string | undefined): string | undefined {
+  const trimmed = line?.trim();
+  return trimmed ? boundedText(trimmed, MAX_PROVIDER_REASON_LENGTH) || undefined : undefined;
+}
+
+/**
+ * The last stderr line that reads as an error (e.g. `ACP bridge failed: connect
+ * ECONNREFUSED 127.0.0.1:18789`). Other output, such as banners or echoed
+ * prompts, stays in the server logs.
+ */
+function stderrErrorLine(stderr: unknown): string | undefined {
+  if (typeof stderr !== "string") return undefined;
+  return reasonLine(
+    stderr.split(/\r?\n/u).findLast((line) => ERROR_WORD.test(line) || ERRNO_CODE.test(line)),
+  );
+}
+
+/**
+ * The first line of a JSON-RPC error's `data.details`, where ACP agents such as
+ * OpenClaw put the reason behind a generic "Internal error".
+ */
+export function acpRequestErrorDetail(data: unknown): string | undefined {
+  if (typeof data !== "object" || data === null) return undefined;
+  try {
+    const details = (data as Record<string, unknown>).details;
+    if (typeof details !== "string") return undefined;
+    return reasonLine(details.split(/\r?\n/u).find((line) => line.trim().length > 0));
+  } catch {
+    return undefined;
+  }
+}
+
+function isMissingExecutable(cause: unknown): boolean {
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 8 && typeof cause === "object" && cause !== null; depth++) {
+    if (seen.has(cause)) return false;
+    seen.add(cause);
+    try {
+      const record = cause as Record<string, unknown>;
+      const reason = record.reason as Record<string, unknown> | undefined;
+      if (record.code === "ENOENT" || reason?._tag === "NotFound") return true;
+      cause = record.cause ?? reason?.cause;
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 /**
