@@ -1,5 +1,6 @@
 #!/bin/zsh
-# Encrypted restic backup of T3 (~/.t3 userdata) and Codex (~/.codex) to R2, next to the OpenClaw backups.
+# Encrypted restic backup of T3 (~/.t3 userdata) and Codex (~/.codex) to R2, next to the OpenClaw backups,
+# then projects-backup.sh for ~/Projects.
 #   backup-t3.sh                    run a backup, apply retention, check the repository
 #   backup-t3.sh init               create the repository (once)
 #   backup-t3.sh <restic args...>   run restic against the repository (e.g. snapshots, restore)
@@ -33,3 +34,5 @@ restic backup --host mac-mini-m6 --tag t3 \
   "$HOME/.t3/userdata" "$HOME/.t3/service.env" "$HOME/.codex" "$stage"
 restic forget --host mac-mini-m6 --tag t3 --keep-daily 7 --keep-weekly 4 --keep-monthly 12 --prune
 restic check
+# ~/Projects: hidden GitHub backup refs, .env files and remote-less repos to R2, Telegram on stale work.
+"$HOME/t3-fork/projects-backup.sh" || print "projects backup reported problems"

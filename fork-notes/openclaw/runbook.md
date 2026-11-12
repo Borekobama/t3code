@@ -195,8 +195,19 @@ openclaw mcp status --verbose
   `t3 project add --base-dir ~/.t3 --title <name> ~/Projects/<path>` on the mini.
 - Shallow repos can't be bundled (OF-Scraper, ai-website-cloner-template): those were cloned from GitHub.
 - Untracked `.env*` files (63) were copied with mode 600. Uncommitted MacBook changes were not copied.
-- Three repos have no remote and exist only on the MacBook and the mini: `Website/Como/configurator`,
-  `Website/vional.com/vional-admin`, `skills/supervisor-shunt`.
+- `Website/Como/configurator` and `Website/vional.com/vional-admin` now push to the private repos
+  `Borekobama/website-como-configurator` and `Borekobama/website-vional-admin` (2026-11-12).
+  `skills/supervisor-shunt` still has no remote, and `skills/chat-on-steroids` is someone else's repo
+  (read-only); both are covered by the R2 backup below.
+- Nightly `projects-backup.sh`, called at the end of `backup-t3.sh` (03:30):
+  - Unpushed commits in repos with a `Borekobama/*` origin are force-pushed to hidden refs
+    `refs/backup/mac-mini-m6/<branch>`. Real branches are never pushed, so no CI or platform deploy runs.
+    Restore: `git fetch origin 'refs/backup/mac-mini-m6/*:refs/remotes/backup/*'`.
+  - Every `.env*` file (examples excluded) and the `.git` folder of each repo without a pushable origin go to
+    the restic repo on R2 with tag `projects` (7 daily / 4 weekly / 12 monthly).
+  - Telegram: one message per branch that has had unpushed commits for over a day (state in
+    `~/.projects-backup-state`, keyed repo|branch|tip), and any fetch/push/restic failure.
+  - The first run was `--seed`, so the 42 branches already unpushed on 2026-11-12 were not reported.
 - Dependencies (`node_modules`, venvs) are not installed; install them per project when needed.
 - From now on there are two working copies of each repo. Commit and push on one machine, pull on the other.
 
