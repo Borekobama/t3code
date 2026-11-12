@@ -85,10 +85,34 @@ cd ~/Developer/t3code && git pull          # or rebase on upstream; see "Update"
 - Client: use the web app served by the mini (`https://mac-mini-m6.tail5d38a1.ts.net:8443`). The stock
   desktop app may not match the fork's version.
 
+## OpenClaw dashboard (approvals from the MacBook)
+
+`https://mac-mini-m6.tail5d38a1.ts.net:8444` is tailnet only. It is an externally managed Serve route,
+because OpenClaw's managed Serve always takes 443, which the fleet dashboard owns. The config is
+`gateway.trustedProxies: ["127.0.0.1"]` plus `gateway.controlUi.allowedOrigins`
+(backup `~/.openclaw/openclaw.json.pre-tailnet-20261112`). Token auth and per-browser device pairing stay
+on. `127.0.0.1` as a trusted proxy means same-host processes may supply proxy attribution. That is accepted
+here because everything runs as `admin`.
+
+Pair another browser:
+
+- Run `openclaw dashboard --json` on the mini.
+- Take `browserUrl`, and replace its base with `https://mac-mini-m6.tail5d38a1.ts.net:8444`.
+- Replace the `gatewayUrl` fragment value with `wss://mac-mini-m6.tail5d38a1.ts.net:8444`.
+- Open it within 10 minutes.
+
+Remove a browser: `openclaw devices list`, then `openclaw devices remove <id>`.
+
+Disable the dashboard route:
+
+- `tailscale serve --https=8444 off`
+- `openclaw config unset gateway.trustedProxies`
+- `openclaw config unset gateway.controlUi.allowedOrigins`
+
 ## Exec approvals (known limitation)
 
 OpenClaw does not relay exec approvals to T3 over ACP. The approval waits in the Gateway for up to
-30 minutes, then is denied. Resolve it on the mini:
+30 minutes, then is denied. Answer it in the dashboard above, or on the mini:
 
 ```bash
 openclaw approvals pending
