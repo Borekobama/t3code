@@ -184,6 +184,21 @@ openclaw mcp status --verbose
   "not connected") until OpenClaw recycles the expired MCP session. `openclaw mcp reload` does not prevent it.
   The workspace AGENTS.md tells Dronk to retry up to 3 times.
 
+## Dronk memory search (local embeddings)
+
+- `memory.search.provider` is `local` (2026-11-12): plugin `@openclaw/llama-cpp-provider`, embedding-only
+  setup. The model is EmbeddingGemma 300M Q8 (`~/.openclaw/models/llama.cpp`, 324 MB), served by a managed
+  Metal `llama-server` on 127.0.0.1:54409. OpenClaw starts it on demand and stops it after 10 idle minutes.
+  The chat model is unchanged. No API key; nothing leaves the mini.
+- Setup and `openclaw memory ...` commands need the Gateway stopped: `openclaw gateway stop --force`, run the
+  command, then `openclaw gateway start`. Setup was `openclaw config set memory.search.provider local` plus
+  `openclaw models auth login --provider llama-cpp --method local` (answer No to the chat model, Yes to
+  embeddings only).
+- Rebuild after a provider or model change: `openclaw memory status --index --agent main` (about 40 s for
+  64 files / 1,438 chunks).
+- The daily R2 backup skips `~/.openclaw/tools` but includes the 324 MB model in `~/.openclaw/models`.
+- Indexed sources are `MEMORY.md`, `USER.md`, `memory/` and sessions; `IDENTITY.md` and `SOUL.md` are not.
+
 ## Backups (OpenClaw to Cloudflare R2)
 
 - Location `offsite` is `r2://openclaw-backups/mac-mini-m6`: a private bucket in WEUR, with archives encrypted
