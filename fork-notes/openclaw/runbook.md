@@ -162,6 +162,17 @@ openclaw mcp status --verbose
   has MacBook paths.
 - To add or remove a skill on the mini, edit the manifest, then run the script.
 - New skills reach the mini after they are pushed to the arsenal repo and added to the manifest.
+- The same script writes the global instruction files `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`.
+  Each file is a static header (`~/t3-fork/global-claude.md` or `global-codex.md`, copied from the MacBook)
+  plus the arsenal block: `INSTALLATION_RULES.md` with the mini's arsenal path, a note that the mini is a
+  read-only mirror, and every skill listed as `native <skill>` in the manifest (caveman, ponytail).
+  A changed file is backed up as `*.bak-<timestamp>` before it is rewritten.
+- All 4 Codex accounts read it: T3 links new `~/.codex` entries into each account's shadow home when it
+  prepares that account (a T3 restart is enough).
+- OpenClaw runs `claude --setting-sources user`, so Dronk also loads `~/.claude/CLAUDE.md` and the Claude
+  skills. The "MINI SCOPE" block in the header keeps Dronk's SOUL.md voice for chat.
+- The arsenal itself (install, review, deploy) stays on the MacBook: Skills Manager and the review database
+  are not on the mini.
 
 ## Backups (OpenClaw to Cloudflare R2)
 

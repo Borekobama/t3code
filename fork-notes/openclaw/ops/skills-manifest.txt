@@ -1,5 +1,8 @@
 # Skills mirrored to the Mac mini, generated 2026-11-12 from the MacBook's deployments.
 # Format: <agent> <skill>. portless-dev is excluded (MacBook-specific paths).
+# "native <skill>" lines go into the global CLAUDE.md / AGENTS.md (always-on, like arsenal native).
+native caveman
+native ponytail
 claude adapt
 claude agent-browser
 claude algorithmic-art

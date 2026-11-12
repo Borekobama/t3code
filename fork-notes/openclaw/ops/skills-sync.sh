@@ -44,3 +44,41 @@ for agent dir in ${(kv)root}; do
   done
 done
 print "$(date +%H:%M:%S) linked=$linked removed=$removed missing=$missing (arsenal $(git -C "$ARSENAL" rev-parse --short HEAD))"
+
+# Global instruction files: a static header (~/t3-fork/global-*.md) plus the arsenal native block,
+# rendered the same way as `arsenal native` (policy + "native <skill>" manifest entries, frontmatter stripped).
+/usr/bin/python3 -I - "$ARSENAL" "$MANIFEST" "$DRY" <<'PY'
+import datetime, pathlib, re, shutil, sys
+arsenal, manifest, dry = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3] == "--dry-run"
+home = pathlib.Path.home()
+mini_note = (
+    "Exception on this Mac mini: the arsenal here is a read-only mirror. Skills Manager and the review "
+    "database live on the MacBook. Do not run `./arsenal` install, deploy, native or tier commands here, and "
+    "do not put skills into `~/.claude/skills` or `~/.codex/skills` by hand. Ask the user to install the skill "
+    "on the MacBook. `~/t3-fork/skills-sync.sh` mirrors it here after it is pushed to the arsenal repo and "
+    "listed in `~/t3-fork/skills-manifest.txt`."
+)
+sections = [(arsenal / "INSTALLATION_RULES.md").read_text().replace("{{ARSENAL_ROOT}}", str(arsenal)).rstrip()
+            + "\n\n" + mini_note + "\n"]
+for line in manifest.read_text().splitlines():
+    parts = line.split()
+    if len(parts) == 2 and parts[0] == "native":
+        text = (arsenal / "skills" / parts[1] / "SKILL.md").read_text()
+        body = re.sub(r"\A---\n.*?\n---\s*\n", "", text, count=1, flags=re.DOTALL)
+        sections.append(f"# Native skill: {parts[1]}\n\n{body.strip()}")
+block = "<!-- BEGIN ARSENAL NATIVE -->\n" + "\n\n".join(sections) + "\n<!-- END ARSENAL NATIVE -->"
+for header, target in (("global-claude.md", ".claude/CLAUDE.md"), ("global-codex.md", ".codex/AGENTS.md")):
+    src, dst = home / "t3-fork" / header, home / target
+    if not src.exists():
+        continue
+    new = src.read_text().rstrip() + "\n\n" + block + "\n"
+    old = dst.read_text() if dst.exists() else ""
+    if new == old:
+        continue
+    print(f"instructions {'would change' if dry else 'updated'}: {dst}")
+    if dry:
+        continue
+    if old:
+        shutil.copy2(dst, dst.with_name(dst.name + ".bak-" + datetime.datetime.now().strftime("%Y%m%d%H%M%S")))
+    dst.write_text(new)
+PY
