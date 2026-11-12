@@ -52,8 +52,8 @@ import datetime, pathlib, re, shutil, sys
 arsenal, manifest, dry = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3] == "--dry-run"
 home = pathlib.Path.home()
 mini_note = (
-    "Exception on this Mac mini: the arsenal here is a read-only mirror. Skills Manager and the review "
-    "database live on the MacBook. Do not run `./arsenal` install, deploy, native or tier commands here, and "
+    "Exception on this Mac mini: the arsenal here is a read-only mirror. The arsenal wraps Skills Manager, "
+    "which runs only on the MacBook and owns the skill IDs in the catalog. Do not run `./arsenal` install, deploy, native or tier commands here, and "
     "do not put skills into `~/.claude/skills` or `~/.codex/skills` by hand. Ask the user to install the skill "
     "on the MacBook. `~/t3-fork/skills-sync.sh` mirrors it here after it is pushed to the arsenal repo and "
     "listed in `~/t3-fork/skills-manifest.txt`."

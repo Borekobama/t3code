@@ -171,8 +171,12 @@ openclaw mcp status --verbose
   prepares that account (a T3 restart is enough).
 - OpenClaw runs `claude --setting-sources user`, so Dronk also loads `~/.claude/CLAUDE.md` and the Claude
   skills. The "MINI SCOPE" block in the header keeps Dronk's SOUL.md voice for chat.
-- The arsenal itself (install, review, deploy) stays on the MacBook: Skills Manager and the review database
-  are not on the mini.
+- The arsenal itself (install, review, deploy) stays on the MacBook. Review approvals are in git
+  (`catalog/*.json`), but the arsenal wraps Skills Manager, which assigns the skill IDs the catalog is keyed on.
+  A second Skills Manager on the mini would write different IDs into the same catalog.
+- After a T3 restart, each OpenClaw session's first t3code call fails once ("Streamable HTTP error", then
+  "not connected") until OpenClaw recycles the expired MCP session. `openclaw mcp reload` does not prevent it.
+  The workspace AGENTS.md tells Dronk to retry up to 3 times.
 
 ## Backups (OpenClaw to Cloudflare R2)
 
