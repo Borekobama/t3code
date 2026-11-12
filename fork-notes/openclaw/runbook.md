@@ -132,6 +132,37 @@ openclaw mcp status --verbose
 - Tested 2026-11-12: Dronk listed projects, then started a Claude thread that read a project file, and reported
   back (12 s).
 
+## Telegram alerts for T3 threads
+
+- LaunchAgent `local.t3-watch` runs `~/t3-fork/t3-watch.py` every 2 minutes (log `~/Library/Logs/t3-watch.log`,
+  state `~/.t3-watch-state.json`). No model is used.
+- It messages the user's Telegram once per change:
+  - a thread needs approval or an answer, read from pending runtime requests (a waiting thread still reports
+    `running`)
+  - a thread finished, failed or was interrupted
+- Each alert carries the tailnet thread link. Pause it with `launchctl bootout gui/501/local.t3-watch`.
+
+## Codex account auto-switch
+
+- Setting "Switch Codex accounts on usage limits" (`autoSwitchCodexAccounts`), on since 2026-11-12. Merged in
+  `e72626801a` (branch `codex-auto-switch`).
+- When a Codex run stops on a usage limit, T3 moves the thread to another Codex account in the same Codex
+  home, continues the turn, and posts a notice.
+- The 99 % pre-switch needs 5-hour and weekly window readings. Managed ChatGPT accounts report none today,
+  so in practice only the switch after a limit fires.
+- Disable it in Settings → Threads.
+
+## Skills on the mini
+
+- `~/skills/global-skill-arsenal` is a clone of the private arsenal repo.
+- `~/t3-fork/skills-sync.sh` pulls it and links every skill listed in `~/t3-fork/skills-manifest.txt` into
+  `~/.claude/skills` and `~/.codex/skills`. It only manages symlinks into the arsenal, so T3's own `synced`
+  folder is left alone. LaunchAgent `local.skills-sync` runs it daily at 05:00.
+- The manifest mirrors the MacBook's deployments (91 Claude, 92 Codex). `portless-dev` is excluded because it
+  has MacBook paths.
+- To add or remove a skill on the mini, edit the manifest, then run the script.
+- New skills reach the mini after they are pushed to the arsenal repo and added to the manifest.
+
 ## Backups (OpenClaw to Cloudflare R2)
 
 - Location `offsite` is `r2://openclaw-backups/mac-mini-m6`: a private bucket in WEUR, with archives encrypted

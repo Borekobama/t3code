@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily pull of the skill arsenal and relink of the mirrored skills (~/t3-fork/skills-sync.sh) at 05:00.
+  Install: cp to ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.skills-sync.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>local.skills-sync</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>/Users/admin/t3-fork/skills-sync.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>5</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/admin/Library/Logs/skills-sync.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/admin/Library/Logs/skills-sync.log</string>
+</dict>
+</plist>
