@@ -247,3 +247,92 @@ before adding simulator-heavy work.
 - Fleet dashboard owns Tailscale HTTPS port 443. T3 must use `--tailscale-serve-port 8443`.
 - Over SSH, `gh` cannot read its token, because the login keychain is locked in SSH sessions. Git uses the
   account SSH key `~/.ssh/github_account_admin` instead. Run `gh` API calls (PRs) from the MacBook.
+
+## Phase 2 hardening (2026-11-12)
+
+Branch `openclaw-hardening`. Commits: `09e0daae3` (readable errors), `d04797bbd` (no rollback for ACP Registry
+agents), `d752f28b2` (OpenClaw replay fixture, log check), plus these notes. Deployed release: `d752f28b2c4a`.
+
+### Findings against the real agent (openclaw acp 2026.11.3)
+
+| Case                                 | What OpenClaw does                                                                                   | T3 before                                                            | T3 now                                                                                                      |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Per-session MCP rejected             | `-32603 Internal error`, `data.details: "ACP bridge mode does not support per-session MCP servers…"` | "The provider session could not be opened. Check that … signed in"   | "The provider session could not be opened: ACP bridge mode does not support per-session MCP servers. …"     |
+| Gateway down at start                | No stdout; stderr `ACP bridge failed: connect ECONNREFUSED 127.0.0.1:<port>`; exit 1 within ~1 s     | "… the provider process exited with code 1. Check the server logs …" | Same, plus `(ACP bridge failed: connect ECONNREFUSED 127.0.0.1:<port>)`                                     |
+| Gateway dies during a session        | Prompt gets `-32603 Internal error`, `data.details: "gateway not connected"`; bridge stays up        | "Provider error · Internal error"                                    | "Internal error: gateway not connected"                                                                     |
+| Executable missing                   | (spawn `ENOENT`)                                                                                     | "The provider session could not be opened. Check that … signed in"   | "…: the provider executable was not found. Check the executable path in the provider settings, …"           |
+| Malformed stdout (e.g. no `acp` arg) | Help text on stdout                                                                                  | Generic "could not be opened" (fails fast, no hang)                  | "…: the provider wrote output that is not ACP. Check that the command and its arguments start an ACP agent" |
+| Fork from this response              | No `session/fork` advertised                                                                         | Works as T3 **Context handoff** (new `session/new` + transcript)     | Unchanged. Live: the fork recalled the last file name. Native fork was already off (`canForkThread=false`). |
+| Edit from here (rollback)            | No truncation in ACP v1                                                                              | Files and T3 history roll back, but the agent restarts **empty**     | Hidden for ACP Registry and Local ACP command instances; the server policy rejects it too                   |
+
+The rollback gap is not OpenClaw-specific: the shared ACP adapter's `rollbackThread` always starts a fresh agent
+session and T3 sends no history afterwards. Live check before the fix: after rollback in a forked OpenClaw thread,
+the agent answered "This is the first message I can see in this conversation."
+
+### Change
+
+- `packages/provider-core/src/server/failure.ts` (shared mapping, no agent-name checks): first line of
+  `data.details`; last stderr line that reads as an error; missing executable; non-ACP stdout. Each reason is at
+  most 300 characters and goes through the existing redaction (URL credentials and queries, `Bearer`, `token=`,
+  `sk-…`). Stderr lines with no error word (banners, echoed prompts) stay hidden, so the old wording stays for them.
+- `packages/provider-acp-registry`: prompt failures append `data.details` to the agent's message unless the message
+  already contains it. Registry and Local ACP command instances report `canRollbackThread`,
+  `providerCanRollbackConversation` and `providerRollbackReturnsSnapshot` as false, and the provider snapshot sets
+  `supportsConversationRollback: false` (as Cursor and Grok do), which hides **Edit from here**.
+- `docs/user/providers-acp.md`: one paragraph on rollback and fork for ACP agents.
+
+### Tests
+
+- `provider-core/failure.test.ts`: stderr error line (bounded, redacted, banner lines stay hidden),
+  `data.details` (first line, redacted, generic text kept without it), missing executable. All three fail on the
+  old code.
+- `AcpRegistryAdapterV2.test.ts`, real child processes through the registry adapter (local `openclaw acp` settings):
+  missing executable; agent writes `ACP bridge failed: connect ECONNREFUSED …` and exits before `initialize`;
+  malformed stdout (fails at once, no hang); `session/new` rejected with OpenClaw's `data.details`. Prompt
+  failure with `gateway not connected`. Rollback capabilities are false. All fail on the old code.
+- Same file: with Per-session MCP `none`, the native request and protocol logs and the agent environment carry no
+  `T3_ACP_MCP_*` and no bearer token (with `default` they do, so the check is not empty).
+- Replay fixture `apps/server/src/orchestration-v2/Adapters/fixtures/openclaw/{new_prompt,load_prompt}.ndjson`,
+  recorded from `openclaw acp` 2026.11.3 with a raw ACP client (scripts kept outside the repo in
+  `~/Developer/openclaw-t3-probe/acp-record.mjs` and `to-fixture.py`). Session id and home path replaced; no
+  credentials in the frames. The test checks capabilities, the reply, and that a reopen sends `session/load`
+  for the same session (no extra `session/new`). Breaking an outbound expectation or an inbound reply fails it.
+- The recording used the real Gateway only as an ordinary ACP client (as T3 does) and closed the session. The
+  Gateway-down data came from a throwaway `--dev --auth none` Gateway on port 18801 with a scratch home, removed
+  afterwards. The real Gateway (`ai.openclaw.gateway`, 18789) was not stopped or reconfigured.
+- `provider-acp-registry/driver.test.ts`: snapshot reports `supportsConversationRollback: false`.
+
+| Suite                                                                              | Result                            |
+| ---------------------------------------------------------------------------------- | --------------------------------- |
+| `packages/provider-core`                                                           | 245 passed                        |
+| `packages/provider-acp`                                                            | 105 passed                        |
+| `packages/provider-acp-registry`                                                   | 64 passed                         |
+| `apps/server` `src/orchestration-v2/Adapters`, `src/provider`, registry replays    | 1888 of 1891 (3 known, below)     |
+| Typecheck: `provider-core`, `provider-acp`, `provider-acp-registry`, `apps/server` | exit 0, 0 errors                  |
+| `vp lint` / `vp fmt --check`                                                       | 0 errors (8 old warnings) / clean |
+
+The 3 failures are the known pre-existing ones (`AntigravityInstallation`, two `ClaudeSkills` cases); they fail
+the same way on unpatched upstream on this host. `apps/web` was not touched.
+
+### Live verification
+
+Release `d752f28b2c4a` via `~/t3-fork/deploy.sh` (rollback: deploy `47ebce46c`).
+
+- A temporary Local ACP instance (`openclaw acp`, Per-session MCP left on "T3 Code tools") showed, in the thread
+  and its banner: "The provider session could not be opened: ACP bridge mode does not support per-session MCP
+  servers. Configure MCP on the OpenClaw gateway or agent instead." Screenshot in the session notes folder.
+- A temporary instance with a missing executable is marked "Unavailable" in the model picker (Settings: "Not
+  found"), so no thread starts on it; the new message covers an executable that disappears after the probe.
+- OpenClaw threads no longer show **Edit from here**; **Fork from this response** is still there.
+- The OpenClaw instance (Per-session MCP = None) still answers (`PHASE2_LIVE_OK`).
+- Both temporary instances were removed. Test threads "Dashboard Approval Probe" (the fork) and "MCP Reject
+  Probe" remain in `openclaw-t3-test`.
+- Not checked live: Gateway down during a T3 thread (that would mean stopping the real Gateway); covered by the
+  recorded reply and the tests.
+
+### Still unsupported
+
+- Exec approvals in T3: OpenClaw sends no `session/request_permission` (separate OpenClaw issue).
+- Conversation rollback for any ACP agent (protocol limit). Upstream could replay the kept turns as a context
+  handoff after rollback instead of hiding it; that touches the orchestrator and is not done here.
+- Native fork (`session/fork`): not advertised by OpenClaw; fork uses the context handoff.
