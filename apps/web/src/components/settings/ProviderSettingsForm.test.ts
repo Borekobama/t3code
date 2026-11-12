@@ -70,6 +70,22 @@ describe("ProviderSettingsForm helpers", () => {
     ).toEqual({ launchArgs: "--x", autoCompactWindow: "300000" });
   });
 
+  it("offers a local ACP command its executable and per-session MCP policy", () => {
+    const acp = providerClients.get(ProviderDriverKind.make("acpRegistry"));
+    expect(acp).toBeDefined();
+    expect(
+      deriveProviderSettingsFields(acp!, { source: "local" }).map(({ key, label, options }) => ({
+        key,
+        label,
+        options: options?.map((option) => option.value),
+      })),
+    ).toEqual([
+      { key: "source", label: "ACP source", options: ["registry", "local"] },
+      { key: "commandPath", label: "Executable", options: undefined },
+      { key: "sessionMcp", label: "Per-session MCP", options: ["default", "none"] },
+    ]);
+  });
+
   it("stores false boolean fields when true is the default", () => {
     const next = nextProviderConfigWithFieldValue(
       undefined,
