@@ -198,8 +198,45 @@ First live T3 → OpenClaw thread (project `~/Developer/openclaw-t3-test`, Super
   reported cwd `openclaw-t3-test`. File reads needed no approval.
 - OpenClaw exposes one model entry (`Default`) plus its ACP config options (thought level, fast mode, ...).
 
-Not yet tested live: exec approval accept/deny through T3, cancel, close/reopen, T3 and Gateway restarts,
-two concurrent OpenClaw threads, the 30-minute load run, and Codex per-account threads.
+### Live end-to-end results (2026-11-12, release `47ebce46c`)
+
+| Check                                                                        | Result                                                                                                                                                                                                           |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OpenClaw selectable in T3, new thread, no per-session MCP error              | pass                                                                                                                                                                                                             |
+| Prompt, streamed reply, follow-up with context                               | pass                                                                                                                                                                                                             |
+| Reads project file in thread cwd (`~/Developer/openclaw-t3-test`)            | pass                                                                                                                                                                                                             |
+| Exec deny: command not executed, thread reports it was blocked               | pass, but only when resolved on the mini (`openclaw approvals resolve <id> deny`)                                                                                                                                |
+| Exec approve: command runs only after `allow-once`; T3 shows the file change | pass, same caveat                                                                                                                                                                                                |
+| Exec approval shown in T3                                                    | **fail**: OpenClaw 2026.11.3 (claude-cli runtime) sends a `tool_call` update but no `session/request_permission`; confirmed with a standalone ACP client. The approval waits in the Gateway (30 min, then deny). |
+| Client disconnect mid-approval                                               | run aborted, approval cancelled, nothing executed                                                                                                                                                                |
+| Cancel (Stop) a long reply                                                   | pass: "Run interrupted"; Gateway `chat.abort`, no leftover `claude` workers                                                                                                                                      |
+| Two concurrent OpenClaw threads                                              | pass: separate `acp-bridge:<uuid>` sessions, no shared context                                                                                                                                                   |
+| Reload / T3 server restart                                                   | pass: `session/close` on shutdown, then `initialize` and `session/load` (no extra `session/new`), history intact, bridges exit with T3                                                                           |
+| Gateway restart while T3 runs                                                | pass: bridge reconnects, history intact                                                                                                                                                                          |
+| Gateway down                                                                 | fails fast with "Provider error · Internal error" (not descriptive); a message during the ~5 s Gateway startup fails the same way; retry works                                                                   |
+| Claude native thread writes a file                                           | pass (Sonnet 5.5, native diff)                                                                                                                                                                                   |
+| Codex account 0 and 1 threads write files                                    | pass; separate `codex app-server` per account (`~/.codex` and a T3 shadow home)                                                                                                                                  |
+| Files exist only on the mini                                                 | pass                                                                                                                                                                                                             |
+| Secrets                                                                      | none in argv, `settings.json`, T3/provider/Gateway logs; the `openclaw acp` process env has only `T3CODE_THREAD_ID`                                                                                              |
+
+### Resources (sampler every 30 s, 15:09-15:29)
+
+| Window                                                                   | mem free min | swap | compressed max | CPU busy avg/max | agent+service RSS max |
+| ------------------------------------------------------------------------ | ------------ | ---- | -------------- | ---------------- | --------------------- |
+| idle                                                                     | 77 %         | 0    | 1.35 GB        | 4 % / 6 %        | 3.1 GB                |
+| E2E tests                                                                | 75 %         | 0    | 1.34 GB        | 4 % / 15 %       | 4.2 GB                |
+| 3 agents (OpenClaw, Claude, Codex) + T3 test-suite loop + fleet services | 77 %         | 0    | 1.21 GB        | 15 % / 47 %      | 6.7 GB                |
+
+About 9 minutes of heavy concurrent load, not a continuous 30-minute soak. Xcode builds and simulators were
+not part of the load. Recommended start: up to 3 concurrent agent threads plus normal builds; measure again
+before adding simulator-heavy work.
+
+### Other findings
+
+- OpenClaw runs a heartbeat turn every 30 minutes on the default model (Opus 5.5) and short Haiku summaries
+  after activity, on the Claude subscription.
+- `memory_pressure` free % stays high while RSS grows, because it counts inactive and purgeable memory; swap
+  and compression are the better warning signs.
 
 ## Open items
 
