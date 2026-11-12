@@ -109,6 +109,29 @@ Disable the dashboard route:
 - `openclaw config unset gateway.trustedProxies`
 - `openclaw config unset gateway.controlUi.allowedOrigins`
 
+## Dronk to T3 (OpenClaw as an outside MCP agent)
+
+- OpenClaw MCP server `t3code` points at `https://mac-mini-m6.tail5d38a1.ts.net:8443/mcp` (streamable-http,
+  OAuth). The OAuth redirect is pinned to `http://127.0.0.1:53682/callback`. Access level is Supervised,
+  approved in T3. The token lives in OpenClaw's state database and is included in the R2 backup.
+- Dronk's rules are in the workspace `AGENTS.md`, section "T3 Code":
+  - start only Claude or Codex threads, never OpenClaw (that would loop back to Dronk)
+  - report with tailnet links
+  - it cannot approve T3 permission requests
+- Re-authorize after a revoke or expiry. Stop the Gateway first, because OpenClaw's MCP commands refuse to write
+  while it runs:
+
+```bash
+openclaw gateway stop --force
+ssh -t -L 53682:127.0.0.1:53682 mac-mini-m6 'export PATH=$HOME/.openclaw/bin:$PATH; openclaw mcp login t3code'   # from the MacBook
+openclaw gateway start
+openclaw mcp status --verbose
+```
+
+- Remove it: `openclaw mcp unset t3code`. Also revoke the session in T3 (`auth session list` / `revoke`).
+- Tested 2026-11-12: Dronk listed projects, then started a Claude thread that read a project file, and reported
+  back (12 s).
+
 ## Backups (OpenClaw to Cloudflare R2)
 
 - Location `offsite` is `r2://openclaw-backups/mac-mini-m6`: a private bucket in WEUR, with archives encrypted
