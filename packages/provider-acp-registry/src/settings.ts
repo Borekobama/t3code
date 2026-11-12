@@ -62,9 +62,24 @@ export const AcpRegistrySettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed([])),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
+    sessionMcp: Schema.Literals(["default", "none"]).pipe(
+      Schema.withDecodingDefault(Effect.succeed("default")),
+      Schema.annotateKey({
+        title: "Per-session MCP",
+        description:
+          "Whether T3 Code attaches its own tools to each agent session. Choose None for agents that reject per-session MCP servers, such as OpenClaw.",
+        providerSettingsForm: {
+          control: "select",
+          options: [
+            { value: "default", label: "T3 Code tools" },
+            { value: "none", label: "None" },
+          ],
+        },
+      }),
+    ),
   },
   {
-    order: ["source", "agentId", "commandPath", "authMethodId"],
+    order: ["source", "agentId", "commandPath", "authMethodId", "sessionMcp"],
   },
 );
 export type AcpRegistrySettings = typeof AcpRegistrySettings.Type;

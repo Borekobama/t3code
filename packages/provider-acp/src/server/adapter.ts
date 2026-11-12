@@ -335,6 +335,8 @@ export interface AcpAdapterV2Flavor {
   readonly mcpOverHttp?: boolean;
   /** The agent has no tool search of its own, so T3 lists optional tools on demand. */
   readonly deferMcpTools?: boolean;
+  /** `"none"` gives the agent no per-session MCP servers and none of T3's MCP credentials. */
+  readonly sessionMcp?: "default" | "none";
   readonly normalizeSessionUpdate?: (
     notification: EffectAcpSchema.SessionNotification,
   ) => EffectAcpSchema.SessionNotification;
@@ -794,6 +796,7 @@ function negotiatedCapabilities(
   started: AcpSessionRuntime.AcpSessionRuntimeStartResult,
   modelOptionArrivesLate: boolean,
   forksFromTurn: boolean,
+  providesT3Mcp: boolean,
 ): OrchestrationV2ProviderCapabilities {
   const agent = started.initializeResult.agentCapabilities ?? {};
   const session = agent.sessionCapabilities;
@@ -818,7 +821,7 @@ function negotiatedCapabilities(
     },
     tools: {
       ...base.tools,
-      supportsMcpTools: true,
+      supportsMcpTools: providesT3Mcp,
     },
     checkpointing: {
       ...base.checkpointing,
@@ -841,9 +844,19 @@ function acpMcpContext(
   self: SelfInvocation,
   mcpOverHttp: boolean | undefined,
   deferMcpTools: boolean | undefined,
+  sessionMcp: "default" | "none" | undefined,
 ): AcpMcpContext {
   if (session === undefined) {
     return { servers: [], acpServers: [], httpServers: [] };
+  }
+  if (sessionMcp === "none") {
+    // Some agents (OpenClaw's ACP bridge) reject any per-session MCP server. The thread id is no credential.
+    return {
+      servers: [],
+      acpServers: [],
+      httpServers: [],
+      processEnvironment: { T3CODE_THREAD_ID: session.threadId },
+    };
   }
   // codex-acp 1.2.0 and pi-acp drop injected HTTP servers, so HTTP is opt-in per flavor.
   return {
@@ -1707,12 +1720,26 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
   const { flavor, selfInvocation: self } = options;
   const readMcpContext = (threadId: ThreadId | null) =>
     threadId === null
-      ? Effect.succeed(acpMcpContext(undefined, self, flavor.mcpOverHttp, flavor.deferMcpTools))
+      ? Effect.succeed(
+          acpMcpContext(
+            undefined,
+            self,
+            flavor.mcpOverHttp,
+            flavor.deferMcpTools,
+            flavor.sessionMcp,
+          ),
+        )
       : mcpSessions
           .read(threadId)
           .pipe(
             Effect.map((session) =>
-              acpMcpContext(session, self, flavor.mcpOverHttp, flavor.deferMcpTools),
+              acpMcpContext(
+                session,
+                self,
+                flavor.mcpOverHttp,
+                flavor.deferMcpTools,
+                flavor.sessionMcp,
+              ),
             ),
           );
   const driver = flavor.driver;
@@ -7186,6 +7213,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           started,
           flavor.modelOptionArrivesLate === true,
           flavor.forkFromTurn?.supported(started.initializeResult) === true,
+          flavor.sessionMcp !== "none",
         );
         const canLoadSession = started.initializeResult.agentCapabilities?.loadSession === true;
         const canResumeSession =
@@ -7935,7 +7963,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           sessionId: string,
         ) {
           const prompt: Array<EffectAcpSchema.ContentBlock> = [];
-          const mcpSession = yield* mcpSessions.read(turnInput.threadId);
+          // Without its MCP server the agent has none of the tools the instructions describe.
+          const mcpSession =
+            flavor.sessionMcp === "none" ? undefined : yield* mcpSessions.read(turnInput.threadId);
           const instructionState = {
             interactionMode: turnInput.runtimePolicy.interactionMode,
             hasT3Mcp: mcpSession !== undefined,
