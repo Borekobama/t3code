@@ -109,6 +109,39 @@ Disable the dashboard route:
 - `openclaw config unset gateway.trustedProxies`
 - `openclaw config unset gateway.controlUi.allowedOrigins`
 
+## Backups (OpenClaw to Cloudflare R2)
+
+- Location `offsite` is `r2://openclaw-backups/mac-mini-m6`: a private bucket in WEUR, with archives encrypted
+  before upload.
+- Daily job `openclaw-backup-offsite` (a command job, no model use) keeps 7 daily, 4 weekly and 12 monthly
+  archives.
+- Included: all of `~/.openclaw` (config, both SQLite databases, the Telegram token file, `.env`) and the
+  workspace `~/Developer/openclaw-workspace`.
+- Not included: T3 (`~/.t3`), the Claude keychain login, and OpenClaw's reinstallable tools.
+- Secrets: `~/.openclaw/.env` holds `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
+  `OPENCLAW_STORAGE_PASSPHRASE`. The passphrase is also in the user's password manager. Without it the
+  archives cannot be decrypted. The R2 token is bucket-scoped Object Read & Write; replace it with
+  `~/t3-fork/set-r2-secrets.sh` (keeps the passphrase).
+
+```bash
+openclaw backup list --from offsite
+openclaw backup create --to offsite --verify --keep-daily 7 --keep-weekly 4 --keep-monthly 12   # on demand
+openclaw backup restore --from offsite latest --target <fresh-dir>                               # staging only
+```
+
+Restore onto a new Mac:
+
+1. Install OpenClaw (`install-cli.sh`).
+2. Put the three variables into `~/.openclaw/.env` (mode 600).
+3. Add the same `storage.locations.offsite` config.
+4. Restore into a fresh directory.
+5. Stop the Gateway and move the restored state into place.
+6. Run `openclaw doctor`, then `claude auth login` in the GUI session.
+
+Approvals and delivery state roll back to the archive's time.
+Tested 2026-11-12: restore from R2 passed SQLite `integrity_check` for all databases; config, token file and
+persona files were present.
+
 ## Exec approvals (known limitation)
 
 OpenClaw does not relay exec approvals to T3 over ACP. The approval waits in the Gateway for up to
