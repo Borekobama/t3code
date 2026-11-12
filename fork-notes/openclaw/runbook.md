@@ -199,6 +199,18 @@ openclaw mcp status --verbose
   `Borekobama/website-como-configurator` and `Borekobama/website-vional-admin` (2026-11-12).
   `skills/supervisor-shunt` still has no remote, and `skills/chat-on-steroids` is someone else's repo
   (read-only); both are covered by the R2 backup below.
+- 13 folders that had no git at all were put into git on 2026-11-12 (initial commit on the MacBook, a
+  `.gitignore` block for `.env`, `node_modules`, `.DS_Store`, `.playwright-mcp`), pushed to new private repos,
+  cloned to the mini and added to T3 (159 projects): `tools-ziviScraper`, `tools-icloudKeepAlive`,
+  `tools-plateRecognition`, `tools-cloakBrowser-new`, `tools-cloakBrowser-old`, `tools-infloww`,
+  `website-como-shop-v2`, `website-magicnetwork.co.uk`, `website-fonioAi`, `website-fishAudio-fonioAi`,
+  `website-template-eliseai`, `website-template-danielrltan.com`, `website-template-phonely`.
+  Kept out of git and only on the MacBook: ZiviScraper `state/` and `bin/`, PlateRecognition
+  `demo-test-videos/` (files over GitHub's 100 MB limit), Infloww `Contents/` (the app bundle), `*.zip`,
+  disassembly dumps and `analysis/source-recovery/tools/` (public tool checkouts). gitleaks found only keys
+  embedded in cloned third-party sites and apps, no own secrets. `tools-infloww` holds another company's
+  decompiled code: keep it private.
+  GitHub limits repo creation bursts ("created too many repositories, too quickly"): retry after a few minutes.
 - Nightly `projects-backup.sh`, called at the end of `backup-t3.sh` (03:30):
   - Unpushed commits in repos with a `Borekobama/*` origin are force-pushed to hidden refs
     `refs/backup/mac-mini-m6/<branch>`. Real branches are never pushed, so no CI or platform deploy runs.
