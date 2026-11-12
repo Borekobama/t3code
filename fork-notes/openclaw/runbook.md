@@ -154,26 +154,34 @@ openclaw mcp status --verbose
 
 ## Skills on the mini
 
-- `~/skills/global-skill-arsenal` is a clone of the private arsenal repo.
-- `~/t3-fork/skills-sync.sh` pulls it and links every skill listed in `~/t3-fork/skills-manifest.txt` into
-  `~/.claude/skills` and `~/.codex/skills`. It only manages symlinks into the arsenal, so T3's own `synced`
-  folder is left alone. LaunchAgent `local.skills-sync` runs it daily at 05:00.
-- The manifest mirrors the MacBook's deployments (91 Claude, 92 Codex). `portless-dev` is excluded because it
-  has MacBook paths.
-- To add or remove a skill on the mini, edit the manifest, then run the script.
-- New skills reach the mini after they are pushed to the arsenal repo and added to the manifest.
+- `~/skills/global-skill-arsenal` is a full working copy of the private arsenal repo. The MacBook and the mini
+  both install, review, deploy and push skills there. Agents on both machines run `git pull --ff-only` in the
+  arsenal before a change (rule in `INSTALLATION_RULES.md`).
+- Skills Manager runs on the mini too: `~/.skills-manager/bin/skills-manager-cli` 1.38.0 (copied from the
+  MacBook), pointed at the clone by `~/Library/Application Support/skills-manager/repo-config.json`. It rebuilds
+  its skill IDs from the git-tracked `skills/.skills-manager/skills/<id>.json` files, so both machines share
+  one set of IDs (checked: all 100 identical; a skill created on the mini showed up on the MacBook with the
+  same ID and approval, and its removal propagated too).
+- `content_hash` ignores `.DS_Store` (arsenal 9e0d712). Before that, Finder files made the machines disagree on
+  hashes and flip skills to needs-review.
+- `~/t3-fork/skills-sync.sh` (LaunchAgent `local.skills-sync`, daily 05:00) pulls the arsenal, runs
+  `./arsenal refresh`, and deploys the baseline in `~/t3-fork/skills-manifest.txt` through Skills Manager
+  (idempotent). The baseline mirrors the MacBook's deployments of 2026-11-12, including legacy skills that were
+  never reviewed. Skills deployed on the mini with `./arsenal deploy` stay; the script never undeploys. It
+  warns about uncommitted arsenal changes and broken skill links.
+- `portless-dev` is MacBook-only (MacBook paths). Skills Manager also detects OpenClaw on the mini; nothing is
+  deployed to it, because Dronk already loads `~/.claude/skills`.
+- `./arsenal native` without `--agent` fails on the MacBook: Skills Manager lists `opencode`, which has no
+  instruction target. Pass the six agents explicitly.
 - The same script writes the global instruction files `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`.
   Each file is a static header (`~/t3-fork/global-claude.md` or `global-codex.md`, copied from the MacBook)
-  plus the arsenal block: `INSTALLATION_RULES.md` with the mini's arsenal path, a note that the mini is a
-  read-only mirror, and every skill listed as `native <skill>` in the manifest (caveman, ponytail).
+  plus the arsenal block: `INSTALLATION_RULES.md` with the mini's arsenal path, the mini's pull-first and
+  deploy notes, and every skill listed as `native <skill>` in the manifest (caveman, ponytail).
   A changed file is backed up as `*.bak-<timestamp>` before it is rewritten.
 - All 4 Codex accounts read it: T3 links new `~/.codex` entries into each account's shadow home when it
   prepares that account (a T3 restart is enough).
 - OpenClaw runs `claude --setting-sources user`, so Dronk also loads `~/.claude/CLAUDE.md` and the Claude
   skills. The "MINI SCOPE" block in the header keeps Dronk's SOUL.md voice for chat.
-- The arsenal itself (install, review, deploy) stays on the MacBook. Review approvals are in git
-  (`catalog/*.json`), but the arsenal wraps Skills Manager, which assigns the skill IDs the catalog is keyed on.
-  A second Skills Manager on the mini would write different IDs into the same catalog.
 - After a T3 restart, each OpenClaw session's first t3code call fails once ("Streamable HTTP error", then
   "not connected") until OpenClaw recycles the expired MCP session. `openclaw mcp reload` does not prevent it.
   The workspace AGENTS.md tells Dronk to retry up to 3 times.

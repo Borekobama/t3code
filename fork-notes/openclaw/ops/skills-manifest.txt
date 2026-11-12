@@ -1,4 +1,4 @@
-# Skills mirrored to the Mac mini, generated 2026-11-12 from the MacBook's deployments.
+# Baseline skills deployed on the Mac mini (MacBook's deployments of 2026-11-12), applied through Skills Manager.
 # Format: <agent> <skill>. portless-dev is excluded (MacBook-specific paths).
 # "native <skill>" lines go into the global CLAUDE.md / AGENTS.md (always-on, like arsenal native).
 native caveman
