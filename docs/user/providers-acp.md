@@ -39,6 +39,12 @@ credentials and skills remain managed by the installed agent or its wrapper. Mod
 options come from ACP, including model IDs that contain JSON. T3 Code launches the executable directly
 without expanding shell expressions.
 
+Some agents reject the MCP server T3 Code attaches to each session. OpenClaw (`openclaw` with the
+argument `acp`) is one. For such an agent, set **Per-session MCP** to **None** in the instance
+settings. The agent then gets no T3 Code tools, such as delegation, browser and device tools, and
+T3 Code keeps its MCP address and credentials out of the agent's environment. Other instances keep
+the default.
+
 ## Where agents run
 
 Registry agents always run on the machine that hosts your T3 Code server. That stays true when you

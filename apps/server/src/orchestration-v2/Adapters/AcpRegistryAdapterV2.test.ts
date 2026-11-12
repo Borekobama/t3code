@@ -1389,86 +1389,141 @@ describe("AcpRegistryAdapterV2", () => {
         new: stdio("Bearer opened-token"),
         load: stdio("Bearer rotated-token"),
       });
+      // OpenClaw's ACP bridge rejects any per-session MCP server on create and on load.
+      assert.deepEqual(
+        yield* sessionMcpServers(
+          { source: "local", commandPath: "openclaw", commandArgs: ["acp"], sessionMcp: "none" },
+          { T3_ACP_MCP_HTTP: "1", T3_ACP_MCP_ACP: "1" },
+        ),
+        { new: [], load: [] },
+      );
     }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
-  it.effect("the agent process env names the thread it serves", () =>
-    Effect.gen(function* () {
-      const selfInvocation = yield* resolveSelfInvocation();
-      const mockAgentPath = yield* (yield* Path.Path).fromFileUrl(
-        new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
-      );
-      const endpoint = "http://127.0.0.1:43123/mcp";
-      const instanceId = ProviderInstanceId.make("acp-registry-thread-env");
-      const threadId = ThreadId.make("thread-acp-registry-thread-env");
-      yield* (yield* McpProviderSessions.McpProviderSessions).set({
-        environmentId: EnvironmentId.make("environment-acp-registry-thread-env"),
-        threadId,
-        providerSessionId: "mcp-session-acp-registry-thread-env",
-        providerInstanceId: instanceId,
-        endpoint,
-        authorizationHeader: "Bearer thread-env-token",
-        browserToolsAvailable: false,
-      });
-      // Several agents can run from one directory at once; the spawn env is how
-      // a process the agent starts (an MCP server, a shell tool) finds its own
-      // T3 thread, the same way Claude and Codex sessions do.
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const spawnEnvironments: Array<Record<string, unknown> | undefined> = [];
-      const capturingSpawner = ChildProcessSpawner.make((command) =>
-        Effect.sync(() => {
-          if (command._tag === "StandardCommand") spawnEnvironments.push(command.options.env);
-        }).pipe(Effect.andThen(spawner.spawn(command))),
-      );
-      const withCapturedSpawns = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-        effect.pipe(
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, capturingSpawner),
+  it.effect.each(["default", "none"] as const)(
+    "the agent process env names the thread it serves (sessionMcp: %s)",
+    (sessionMcp) =>
+      Effect.gen(function* () {
+        const selfInvocation = yield* resolveSelfInvocation();
+        const mockAgentPath = yield* (yield* Path.Path).fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
         );
-      const adapter = yield* withCapturedSpawns(
-        makeAcpRegistryAdapterV2({
-          selfInvocation,
-          instanceId,
-          settings: yield* decodeAcpRegistryAdapterSettings({ agentId: "claude-acp" }),
-          environment: {},
-        }).pipe(
-          Effect.provide(
-            Layer.mock(AcpRegistrySupport.AcpRegistryCatalog)({
-              resolve: () =>
-                Effect.succeed({
-                  distribution: "local" as const,
-                  spawn: {
-                    command: process.execPath,
-                    args: [mockAgentPath],
-                    env: { T3_ACP_SESSION_LIFECYCLE: "1" },
-                  },
+        const endpoint = "http://127.0.0.1:43123/mcp";
+        const instanceId = ProviderInstanceId.make("acp-registry-thread-env");
+        const threadId = ThreadId.make("thread-acp-registry-thread-env");
+        yield* (yield* McpProviderSessions.McpProviderSessions).set({
+          environmentId: EnvironmentId.make("environment-acp-registry-thread-env"),
+          threadId,
+          providerSessionId: "mcp-session-acp-registry-thread-env",
+          providerInstanceId: instanceId,
+          endpoint,
+          authorizationHeader: "Bearer thread-env-token",
+          browserToolsAvailable: false,
+        });
+        // Several agents can run from one directory at once; the spawn env is how
+        // a process the agent starts (an MCP server, a shell tool) finds its own
+        // T3 thread, the same way Claude and Codex sessions do.
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const spawnEnvironments: Array<Record<string, unknown> | undefined> = [];
+        const capturingSpawner = ChildProcessSpawner.make((command) =>
+          Effect.sync(() => {
+            if (command._tag === "StandardCommand") spawnEnvironments.push(command.options.env);
+          }).pipe(Effect.andThen(spawner.spawn(command))),
+        );
+        const withCapturedSpawns = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          effect.pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, capturingSpawner),
+          );
+        const prompts: Array<unknown> = [];
+        const adapter = yield* withCapturedSpawns(
+          makeAcpRegistryAdapterV2({
+            selfInvocation,
+            instanceId,
+            settings: yield* decodeAcpRegistryAdapterSettings({
+              agentId: "claude-acp",
+              sessionMcp,
+            }),
+            environment: {},
+            nativeLogging: () => ({
+              requestLogger: (event) =>
+                Effect.sync(() => {
+                  if (event.status === "started" && event.method === "session/prompt") {
+                    prompts.push(event.payload);
+                  }
                 }),
             }),
+          }).pipe(
+            Effect.provide(
+              Layer.mock(AcpRegistrySupport.AcpRegistryCatalog)({
+                resolve: () =>
+                  Effect.succeed({
+                    distribution: "local" as const,
+                    spawn: {
+                      command: process.execPath,
+                      args: [mockAgentPath],
+                      env: { T3_ACP_SESSION_LIFECYCLE: "1" },
+                    },
+                  }),
+              }),
+            ),
           ),
-        ),
-      );
-      const modelSelection = { instanceId, model: "default" } as const;
-      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        cwd: process.cwd(),
-      });
-      const runtime = yield* withCapturedSpawns(
-        adapter.openSession({
-          threadId,
-          providerSessionId: ProviderSessionId.make("provider-session-acp-registry-thread-env"),
-          modelSelection,
-          runtimePolicy,
-        }),
-      );
-      yield* withCapturedSpawns(runtime.ensureThread({ threadId, modelSelection, runtimePolicy }));
-      const agentEnvironment = spawnEnvironments.find(
-        (environment) => environment?.T3_ACP_SESSION_LIFECYCLE === "1",
-      );
-      assert.isDefined(agentEnvironment, "the agent itself must have been spawned");
-      assert.equal(agentEnvironment?.T3CODE_THREAD_ID, "thread-acp-registry-thread-env");
-      assert.equal(agentEnvironment?.T3_ACP_MCP_ENDPOINT, endpoint);
-      assert.equal(agentEnvironment?.T3_ACP_MCP_AUTHORIZATION, "Bearer thread-env-token");
-    }).pipe(Effect.provide(layerTest), Effect.scoped),
+        );
+        const modelSelection = { instanceId, model: "default" } as const;
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const runtime = yield* withCapturedSpawns(
+          adapter.openSession({
+            threadId,
+            providerSessionId: ProviderSessionId.make("provider-session-acp-registry-thread-env"),
+            modelSelection,
+            runtimePolicy,
+          }),
+        );
+        const providerThread = yield* withCapturedSpawns(
+          runtime.ensureThread({ threadId, modelSelection, runtimePolicy }),
+        );
+        const agentEnvironment = spawnEnvironments.find(
+          (environment) => environment?.T3_ACP_SESSION_LIFECYCLE === "1",
+        );
+        // "none" keeps T3's MCP endpoint and bearer token out of the agent process.
+        const exposesMcp = sessionMcp === "default";
+        assert.isDefined(agentEnvironment, "the agent itself must have been spawned");
+        assert.equal(agentEnvironment?.T3CODE_THREAD_ID, "thread-acp-registry-thread-env");
+        assert.equal(agentEnvironment?.T3_ACP_MCP_ENDPOINT, exposesMcp ? endpoint : undefined);
+        assert.equal(
+          agentEnvironment?.T3_ACP_MCP_AUTHORIZATION,
+          exposesMcp ? "Bearer thread-env-token" : undefined,
+        );
+        assert.equal(runtime.providerSession.capabilities.tools.supportsMcpTools, exposesMcp);
+
+        // The prompt describes T3's tools only when the agent has them.
+        yield* withCapturedSpawns(
+          runtime.startTurn(
+            makeTurnInput({
+              threadId,
+              providerThread,
+              instanceId,
+              runtimePolicy,
+              now: yield* DateTime.now,
+            }),
+          ),
+        );
+        yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runForEach((event) =>
+            Effect.sync(() => {
+              if (event.type === "turn.terminal") {
+                assert.equal(event.status, "completed", event.failure?.message);
+              }
+            }),
+          ),
+        );
+        assert.lengthOf(prompts, 1);
+        assert.equal(JSON.stringify(prompts[0]).includes("acp-mcp-call"), exposesMcp);
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
   it.effect.each(["before", "after"] as const)(
