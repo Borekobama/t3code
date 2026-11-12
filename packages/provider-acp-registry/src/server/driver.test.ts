@@ -254,6 +254,8 @@ describe("acpRegistrySnapshotReadiness", () => {
 
     expect(snapshot.auth).toEqual({ status: "unknown", canLogout: false });
     expect(snapshot.supportsTextGeneration).toBe(false);
+    // ACP rollback would restart the agent without the turns T3 keeps, so clients hide it.
+    expect(snapshot.supportsConversationRollback).toBe(false);
     expect(
       snapshot.models.map(({ slug, name, isCustom, isDefault }) => ({
         slug,

@@ -45,6 +45,10 @@ settings. The agent then gets no T3 Code tools, such as delegation, browser and 
 T3 Code keeps its MCP address and credentials out of the agent's environment. Other instances keep
 the default.
 
+ACP gives a client no way to remove turns from an agent's conversation. Threads on ACP Registry
+and Local ACP command instances therefore do not offer **Edit from here**. **Fork from this
+response** still works: T3 Code starts a new agent session and hands it the earlier conversation.
+
 ## Where agents run
 
 Registry agents always run on the machine that hosts your T3 Code server. That stays true when you

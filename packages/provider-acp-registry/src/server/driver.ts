@@ -212,6 +212,8 @@ function baseSnapshot(
     ...(iconUrl ? { iconUrl } : {}),
     continuation: { groupKey: input.continuationKey },
     supportsTextGeneration: false,
+    // ACP rollback cannot keep earlier turns in the agent's context (see the adapter's capabilities).
+    supportsConversationRollback: false,
     enabled: input.settings.enabled,
     installed: input.installed,
     version: input.version,

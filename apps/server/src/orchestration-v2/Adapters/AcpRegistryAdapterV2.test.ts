@@ -1443,6 +1443,13 @@ describe("AcpRegistryAdapterV2", () => {
           exposesMcp ? "Bearer thread-env-token" : undefined,
         );
         assert.equal(runtime.providerSession.capabilities.tools.supportsMcpTools, exposesMcp);
+        // ACP cannot truncate a conversation; a rollback would restart the agent without its history.
+        const { threads, checkpointing } = runtime.providerSession.capabilities;
+        assert.isFalse(threads.canRollbackThread);
+        assert.isFalse(checkpointing.providerCanRollbackConversation);
+        assert.isFalse(
+          (yield* adapter.getCapabilities()).checkpointing.providerCanRollbackConversation,
+        );
 
         // The prompt describes T3's tools only when the agent has them.
         yield* withCapturedSpawns(

@@ -15,7 +15,11 @@ import {
   isCopilotLostSessionError,
   makeCopilotSubagentRouting,
 } from "./copilotAcp.ts";
-import { defaultInstanceIdForDriver, ProviderDriverKind } from "@t3tools/contracts";
+import {
+  defaultInstanceIdForDriver,
+  ProviderDriverKind,
+  type OrchestrationV2ProviderCapabilities,
+} from "@t3tools/contracts";
 import { readCustomModelEntries } from "@t3tools/shared/model";
 import { AcpRegistrySettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -82,6 +86,21 @@ export interface AcpRegistryAdapterV2Options {
   readonly continuationRequests?: Parameters<typeof makeAcpAdapterV2>[0]["continuationRequests"];
   readonly assertComplete?: Effect.Effect<void, EffectAcpErrors.AcpError>;
 }
+
+/**
+ * ACP v1 has no conversation truncation, so the shared rollback starts an empty
+ * agent session: the agent would forget the turns T3 still shows. Registry
+ * agents therefore offer no conversation rollback, as Cursor and Grok do.
+ */
+const AcpRegistryCapabilitiesV2 = {
+  ...AcpProviderCapabilitiesV2,
+  threads: { ...AcpProviderCapabilitiesV2.threads, canRollbackThread: false },
+  checkpointing: {
+    ...AcpProviderCapabilitiesV2.checkpointing,
+    providerCanRollbackConversation: false,
+    providerRollbackReturnsSnapshot: false,
+  },
+} satisfies OrchestrationV2ProviderCapabilities;
 
 // Mistral Vibe's application rate-limit code, outside ACP.
 const MISTRAL_VIBE_RATE_LIMITED = -31001;
@@ -222,10 +241,10 @@ export const makeAcpRegistryAdapterV2 = Effect.fn("makeAcpRegistryAdapterV2")(fu
     // Cancelling a Copilot prompt also kills the background agents it started.
     capabilities: isCopilot
       ? {
-          ...AcpProviderCapabilitiesV2,
-          turns: { ...AcpProviderCapabilitiesV2.turns, supportsSteeringByInterruptRestart: false },
+          ...AcpRegistryCapabilitiesV2,
+          turns: { ...AcpRegistryCapabilitiesV2.turns, supportsSteeringByInterruptRestart: false },
         }
-      : AcpProviderCapabilitiesV2,
+      : AcpRegistryCapabilitiesV2,
     customModels: readCustomModelEntries(options.settings.customModels).map((entry) => entry.slug),
     sessionMcp: options.settings.sessionMcp,
     promptFailure: (cause) => acpRegistryPromptFailure(registryAgentId, cause),
