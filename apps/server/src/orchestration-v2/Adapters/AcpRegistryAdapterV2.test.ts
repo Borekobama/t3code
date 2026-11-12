@@ -39,6 +39,7 @@ import {
 } from "@t3tools/provider-testing/replayGate";
 import type { ProviderContinuationRequest } from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as ServerSettings from "../../serverSettings.ts";
+import { readReplayFixtureTranscript } from "../testkit/ProviderReplayFixtures.ts";
 import type { AcpRegistryLiveConfiguration } from "@t3tools/provider-acp-registry/testing";
 import * as AcpRegistrySupport from "@t3tools/provider-acp-registry/server/AcpRegistrySupport";
 import * as AcpRegistryRuntimeCoordinator from "@t3tools/provider-acp-registry/server/AcpRegistryRuntimeCoordinator";
@@ -1380,6 +1381,7 @@ describe("AcpRegistryAdapterV2", () => {
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, capturingSpawner),
           );
         const prompts: Array<unknown> = [];
+        const logs: Array<string> = [];
         const adapter = yield* withCapturedSpawns(
           makeAcpRegistryAdapterV2({
             selfInvocation,
@@ -1392,10 +1394,16 @@ describe("AcpRegistryAdapterV2", () => {
             nativeLogging: () => ({
               requestLogger: (event) =>
                 Effect.sync(() => {
+                  logs.push(JSON.stringify(event));
                   if (event.status === "started" && event.method === "session/prompt") {
                     prompts.push(event.payload);
                   }
                 }),
+              protocolLogging: {
+                logIncoming: true,
+                logOutgoing: true,
+                logger: (event) => Effect.sync(() => logs.push(JSON.stringify(event))),
+              },
             }),
           }).pipe(
             Effect.provide(
@@ -1475,6 +1483,11 @@ describe("AcpRegistryAdapterV2", () => {
         );
         assert.lengthOf(prompts, 1);
         assert.equal(JSON.stringify(prompts[0]).includes("acp-mcp-call"), exposesMcp);
+        // Nor does the token reach the native protocol and request logs.
+        const logged = logs.join("\n");
+        assert.isNotEmpty(logs);
+        assert.equal(logged.includes("thread-env-token"), exposesMcp);
+        assert.equal(logged.includes("T3_ACP_MCP_"), exposesMcp);
       }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
@@ -1587,6 +1600,125 @@ describe("AcpRegistryAdapterV2", () => {
       }).pipe(Effect.provide(layerTest), Effect.scoped),
     );
   });
+
+  it.effect("replays OpenClaw's recorded new, prompt and reload cycle", () =>
+    Effect.gen(function* () {
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const replayDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-openclaw-replay-",
+      });
+      const scriptPath = yield* path.fromFileUrl(
+        new URL("../../../scripts/acp-replay-agent.ts", import.meta.url),
+      );
+      // Recorded from `openclaw acp` 2026.11.3; one agent process each.
+      const transcripts = yield* Effect.forEach(["new_prompt", "load_prompt"], (name) =>
+        readReplayFixtureTranscript(
+          new URL(`./fixtures/openclaw/${name}.ndjson`, import.meta.url),
+        ).pipe(
+          Effect.flatMap((transcript) =>
+            decodeAcpReplayTranscript(transcript, ACP_REGISTRY_PROVIDER),
+          ),
+          Effect.orDie,
+        ),
+      );
+      let spawned = 0;
+      const instanceId = ProviderInstanceId.make("openclaw-replay");
+      const threadId = ThreadId.make("thread-openclaw-replay");
+      const modelSelection = { instanceId, model: "default" } as const;
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        cwd: replayDir,
+      });
+      const openRuntime = Effect.fn("openOpenClawReplay")(function* (
+        initialNativeThreadId?: string,
+      ) {
+        const adapter = yield* makeAcpRegistryAdapterV2({
+          selfInvocation: yield* resolveSelfInvocation(),
+          instanceId,
+          settings: yield* decodeAcpRegistryAdapterSettings({
+            source: "local",
+            commandPath: "openclaw",
+            commandArgs: ["acp"],
+            sessionMcp: "none",
+          }),
+          environment: {},
+          makeRuntime: (runtimeInput) => {
+            const index = spawned++;
+            return makeAcpReplayRuntime({
+              transcript: transcripts[index]!,
+              statusPath: path.join(replayDir, `status-${index}.json`),
+              scriptPath,
+              childProcessSpawner,
+              fileSystem,
+            })(runtimeInput);
+          },
+        }).pipe(Effect.provide(layerInjectedRuntimeCatalog));
+        return yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("session-openclaw-replay"),
+          modelSelection,
+          runtimePolicy,
+          ...(initialNativeThreadId === undefined ? {} : { initialNativeThreadId }),
+        });
+      });
+      const replyTo = (
+        runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+        providerThread: Parameters<typeof makeTurnInput>[0]["providerThread"],
+        ordinal: number,
+      ) =>
+        Effect.gen(function* () {
+          yield* runtime.startTurn(
+            makeTurnInput({
+              threadId,
+              providerThread,
+              instanceId,
+              runtimePolicy,
+              now: yield* DateTime.now,
+              ordinal,
+            }),
+          );
+          const events = yield* runtime.events.pipe(
+            Stream.takeUntil((event) => event.type === "turn.terminal"),
+            Stream.runCollect,
+          );
+          const terminal = events.at(-1);
+          assert.equal(
+            terminal?.type === "turn.terminal" ? terminal.status : undefined,
+            "completed",
+          );
+          return events.flatMap((event) =>
+            event.type === "message.updated" && event.message.role === "assistant"
+              ? [event.message.text]
+              : [],
+          );
+        });
+
+      const providerThread = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const runtime = yield* openRuntime();
+          const created = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+          // OpenClaw advertises load, resume, list and close, but no fork and no MCP transport.
+          const { threads, tools, checkpointing } = runtime.providerSession.capabilities;
+          assert.isTrue(threads.canReadThreadSnapshot);
+          assert.isFalse(threads.canForkThread);
+          assert.isFalse(threads.canRollbackThread);
+          assert.isFalse(checkpointing.providerCanRollbackConversation);
+          assert.isFalse(tools.supportsMcpTools);
+          assert.include(yield* replyTo(runtime, created, 1), "T3_OPENCLAW_FIXTURE_OK");
+          return created;
+        }),
+      );
+      // A restarted T3 loads the same OpenClaw session instead of creating another one.
+      const reopened = yield* openRuntime(providerThread.nativeThreadRef?.nativeId ?? undefined);
+      const resumed = yield* reopened.resumeThread({ providerThread });
+      assert.equal(resumed.nativeThreadRef?.nativeId, "openclaw-replay-session-1");
+      assert.include(yield* replyTo(reopened, resumed, 2), "T3_OPENCLAW_FIXTURE_OK");
+      assert.equal(spawned, 2);
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
 
   it.effect.each(["before", "after"] as const)(
     "reconciles a full prompt echo %s acknowledgment",
