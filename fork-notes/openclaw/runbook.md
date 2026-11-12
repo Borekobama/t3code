@@ -117,7 +117,7 @@ Disable the dashboard route:
   archives.
 - Included: all of `~/.openclaw` (config, both SQLite databases, the Telegram token file, `.env`) and the
   workspace `~/Developer/openclaw-workspace`.
-- Not included: T3 (`~/.t3`), the Claude keychain login, and OpenClaw's reinstallable tools.
+- Not included here: T3 and Codex (see below), the Claude keychain login, and OpenClaw's reinstallable tools.
 - Secrets: `~/.openclaw/.env` holds `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
   `OPENCLAW_STORAGE_PASSPHRASE`. The passphrase is also in the user's password manager. Without it the
   archives cannot be decrypted. The R2 token is bucket-scoped Object Read & Write; replace it with
@@ -141,6 +141,33 @@ Restore onto a new Mac:
 Approvals and delivery state roll back to the archive's time.
 Tested 2026-11-12: restore from R2 passed SQLite `integrity_check` for all databases; config, token file and
 persona files were present.
+
+## Backups (T3 and Codex to Cloudflare R2, restic)
+
+- Repository `r2://openclaw-backups/mac-mini-m6/t3`, encrypted by restic. Its password is the same
+  `OPENCLAW_STORAGE_PASSPHRASE`.
+- LaunchAgent `local.t3-backup` runs `~/t3-fork/backup-t3.sh` daily at 03:30 (log
+  `~/Library/Logs/t3-backup.log`). It takes consistent SQLite copies of `statev2.sqlite` (T3) and
+  `state_5.sqlite` (Codex) while both keep running. It then backs up `~/.t3/userdata` (without logs),
+  `~/.t3/service.env` and `~/.codex`, keeps 7 daily, 4 weekly and 12 monthly snapshots, and runs `restic check`.
+- Not included: `~/.t3/tools` (reinstallable) and T3 worktrees (their commits live in the git repositories).
+
+```bash
+~/t3-fork/backup-t3.sh snapshots
+launchctl kickstart gui/501/local.t3-backup                            # back up now
+~/t3-fork/backup-t3.sh restore latest --target <fresh-dir>             # staging restore
+```
+
+Restore T3 data:
+
+1. Stop T3: `launchctl bootout gui/501/local.t3code-fork`.
+2. Copy `userdata` back into `~/.t3/`.
+3. Put `.t3-backup-staging/t3-statev2.sqlite` back as `~/.t3/userdata/statev2.sqlite`, and remove any old
+   `-wal`/`-shm` files.
+4. Start T3 again.
+
+Restore the Codex sign-in only if the old machine no longer uses it: Codex refresh tokens are single-use.
+Tested 2026-11-12: restored `statev2.sqlite` passed `integrity_check` with the same thread count as live.
 
 ## Exec approvals (known limitation)
 

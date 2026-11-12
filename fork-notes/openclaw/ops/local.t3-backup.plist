@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily encrypted restic backup of T3 (~/.t3 userdata) and Codex (~/.codex) to R2 at 03:30.
+  Install: cp to ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.t3-backup.plist
+  Run now: launchctl kickstart gui/$(id -u)/local.t3-backup
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>local.t3-backup</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>/Users/admin/t3-fork/backup-t3.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/admin/Library/Logs/t3-backup.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/admin/Library/Logs/t3-backup.log</string>
+</dict>
+</plist>
