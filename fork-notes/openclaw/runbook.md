@@ -171,8 +171,6 @@ openclaw mcp status --verbose
   warns about uncommitted arsenal changes and broken skill links.
 - `portless-dev` is MacBook-only (MacBook paths). Skills Manager also detects OpenClaw on the mini; nothing is
   deployed to it, because Dronk already loads `~/.claude/skills`.
-- `./arsenal native` without `--agent` fails on the MacBook: Skills Manager lists `opencode`, which has no
-  instruction target. Pass the six agents explicitly.
 - The same script writes the global instruction files `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`.
   Each file is a static header (`~/t3-fork/global-claude.md` or `global-codex.md`, copied from the MacBook)
   plus the arsenal block: `INSTALLATION_RULES.md` with the mini's arsenal path, the mini's pull-first and
