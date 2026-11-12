@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Patched T3 Code server (Borekobama/t3code fork), loopback only.
+  Runs ~/t3-fork/current, which deploy.sh points at a built release. Not managed by `t3 service`,
+  so `t3 update` and remote updates have no launcher to replace.
+  Install: cp to ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.t3code-fork.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>local.t3code-fork</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/admin/.local/share/vite-plus/js_runtime/node/26.12.1/bin/node</string>
+    <string>--env-file-if-exists=/Users/admin/.t3/service.env</string>
+    <string>/Users/admin/t3-fork/current/apps/server/dist/bin.mjs</string>
+    <string>serve</string>
+    <string>--host</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>3773</string>
+    <string>--base-dir</string>
+    <string>/Users/admin/.t3</string>
+    <string>--no-browser</string>
+    <string>/Users/admin/Developer</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/admin/Developer</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/admin/.local/share/vite-plus/js_runtime/node/26.12.1/bin:/Users/admin/.local/bin:/Users/admin/.openclaw/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/admin/Library/Logs/t3code-fork/server.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/admin/Library/Logs/t3code-fork/server.log</string>
+</dict>
+</plist>
