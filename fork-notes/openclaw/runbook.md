@@ -94,6 +94,11 @@ because OpenClaw's managed Serve always takes 443, which the fleet dashboard own
 on. `127.0.0.1` as a trusted proxy means same-host processes may supply proxy attribution. That is accepted
 here because everything runs as `admin`.
 
+`gateway.publicOrigin` is set to the same URL (backup `~/.openclaw/backups/openclaw.json.pre-publicOrigin-*`).
+OpenClaw uses it to build links it sends in chat, for example the secure credential card
+(`<origin>/ask/<id>`). Without it, Dronk answers "Credential request unavailable here: no reachable Control UI
+link". The link opens only on a tailnet device whose browser is paired (see below).
+
 Pair another browser:
 
 - Run `openclaw dashboard --json` on the mini.
@@ -108,6 +113,7 @@ Disable the dashboard route:
 - `tailscale serve --https=8444 off`
 - `openclaw config unset gateway.trustedProxies`
 - `openclaw config unset gateway.controlUi.allowedOrigins`
+- `openclaw config unset gateway.publicOrigin`
 
 ## Dronk to T3 (OpenClaw as an outside MCP agent)
 
