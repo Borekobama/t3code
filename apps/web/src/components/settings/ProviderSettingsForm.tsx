@@ -98,6 +98,9 @@ function fieldAcceptsString(
   return (value) => Option.isSome(decode(value));
 }
 
+// A local command has no registry entry; arguments and environment have their own editors.
+const LOCAL_ACP_FIELDS = new Set(["source", "commandPath", "sessionMcp"]);
+
 export function deriveProviderSettingsFields(
   definition: SettingsFormDefinition,
   value?: unknown,
@@ -123,7 +126,7 @@ export function deriveProviderSettingsFields(
       const fieldSchema = definition.settingsSchema.fields[key]!;
       const formAnnotation = readProviderSettingsFormAnnotation(fieldSchema);
       if (formAnnotation.hidden) return [];
-      if (isLocalAcp && key !== "source" && key !== "commandPath") return [];
+      if (isLocalAcp && !LOCAL_ACP_FIELDS.has(key)) return [];
 
       const annotatedTitle = readFieldAnnotationString(fieldSchema, "title");
       const annotatedDescription = readFieldAnnotationString(fieldSchema, "description");
