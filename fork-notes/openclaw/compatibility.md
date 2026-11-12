@@ -2,8 +2,9 @@
 
 Fork-only notes for `Borekobama/t3code`. Not part of any upstream PR.
 
-Status: **Phase 0 complete (2026-11-12).** The baseline is green, the blocker is reproduced, and the patch
-design is below. No T3 source has been changed yet.
+Status: **Phase 1 complete (2026-11-12).** The per-instance MCP opt-out is in commit `40fbb0ca1`,
+test-covered and checked live against `openclaw acp`. Phase 2 (conversations, cancel, approvals) needs a
+signed-in model runtime on the Gateway.
 
 ## Pinned versions
 
@@ -126,6 +127,46 @@ One per-instance setting, applied where the adapter is built. It changes nothing
 
 Not planned: an OpenClaw-specific driver, a check of the agent's name, or any client-only conditional.
 
+## Phase 1 result
+
+Commit `40fbb0ca1` `feat(acp): let an ACP instance opt out of per-session MCP`.
+
+| File                                                   | Change                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `packages/provider-acp-registry/src/settings.ts`       | New `sessionMcp` setting, default `"default"`, select "Per-session MCP"                                                                                                                                                                                                  |
+| `packages/provider-acp-registry/src/server/adapter.ts` | Passes the setting into the ACP flavor                                                                                                                                                                                                                                   |
+| `packages/provider-acp/src/server/adapter.ts`          | `acpMcpContext()` returns no servers and only `T3CODE_THREAD_ID` under `"none"`. This also skips the MCP-over-ACP bridge, which needs the endpoint. `resolvePromptParts()` omits the T3 tool instructions. `negotiatedCapabilities()` reports `supportsMcpTools: false`. |
+| `apps/server/.../AcpRegistryAdapterV2.test.ts`         | `"none"` row in the `mcpServers` table (new and load). The process-env test now runs for `"default"` and `"none"`: env, capability and first prompt.                                                                                                                     |
+| `docs/user/providers-acp.md`                           | One paragraph on the setting                                                                                                                                                                                                                                             |
+
+Design change from the plan: the setting is applied in `acpMcpContext()`, which `readMcpContext()` calls, rather
+than in `readMcpContext()` itself. Same single choke point.
+
+### Verification
+
+- The two new cases fail on the unpatched source and pass with the patch.
+- Tests: `provider-acp` 105, `provider-acp-registry` 64, server ACP suites 308 (was 307), all passing.
+- Server `src/orchestration-v2/Adapters` plus `src/provider`: 1867 of 1870 pass. The 3 failures
+  (`AntigravityInstallation`, two `ClaudeSkills` cases, one an `EEXIST` in a temp dir) fail identically on
+  unpatched upstream, so they are pre-existing.
+- Typecheck: `provider-acp`, `provider-acp-registry`, `apps/server`, `apps/web` all exit 0 with 0 errors.
+  Lint and knip are clean.
+- Live check: a temporary, uncommitted vitest file ran T3's registry adapter and ACP runtime against real
+  `openclaw acp` 2026.11.3, with a throwaway loopback Gateway.
+  - `"default"`: `session/new` with `t3-code` is rejected. T3 shows only the generic "The provider session
+    could not be opened. Check that the provider is installed and signed in" and hides OpenClaw's reason.
+  - `"none"`: `session/new` `[]` succeeds. A fresh process then sends `initialize`, `session/new` `[]` and
+    `session/load` `[]`, and the load succeeds.
+
+### Findings for Phase 2
+
+- On reopen, the adapter opened a new OpenClaw session before loading the old one. That leaves an extra
+  `acp-bridge:<uuid>` session in the Gateway each time. Check whether the real orchestrator path does the same
+  (it passes `initialNativeThreadId`).
+- Agent setup errors are reduced to the generic message above. Phase 2 should show the agent's reason, for
+  example a Gateway that is down or a rejected setup.
+- Whether a fork works was not tested: OpenClaw does not advertise `session/fork`.
+
 ## Open items
 
 - Phase 3 host setup needs the user: Claude Code login, OpenClaw onboarding, Codex accounts in T3, and pairing.
@@ -133,5 +174,5 @@ Not planned: an OpenClaw-specific driver, a check of the agent's name, or any cl
   Claude CLI (subscription) via `agents.defaults.model.fallbacks`. An explicit model pick in T3 disables the
   fallback.
 - Fleet dashboard owns Tailscale HTTPS port 443. T3 must use `--tailscale-serve-port 8443`.
-- Pushing from the mini over SSH fails: `gh` stores its token in the login keychain, which is locked in SSH
-  sessions.
+- Over SSH, `gh` cannot read its token, because the login keychain is locked in SSH sessions. Git uses the
+  account SSH key `~/.ssh/github_account_admin` instead. Run `gh` API calls (PRs) from the MacBook.
