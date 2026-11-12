@@ -23,6 +23,7 @@ import {
   exhaustedUsageWindow,
   paceOf,
   paceRemainingPercent,
+  pickCodexAccountSwitch,
   usesChatGptSharing,
   resolveNewThreadModelSelection,
 } from "./usageLimits.ts";
@@ -153,6 +154,129 @@ describe("new thread model fallback", () => {
         ],
       }).selection,
     ).toEqual(usesFallback ? fallback : defaultSelection);
+  });
+});
+
+describe("Codex account switch", () => {
+  const home = { groupKey: "codex:home:/shared" };
+  const account = (id: string, used: ReadonlyArray<number> | null, overrides = {}) =>
+    provider({
+      instanceId: ProviderInstanceId.make(id),
+      displayName: id,
+      continuation: home,
+      ...(used === null
+        ? {}
+        : {
+            usageLimits: {
+              checkedAt: "2026-09-03T11:00:00.000Z",
+              windows: used.map((usedPercent, index) => ({
+                ...window,
+                id: index === 0 ? "primary" : "secondary",
+                kind: index === 0 ? ("session" as const) : ("weekly" as const),
+                usedPercent,
+              })),
+            },
+          }),
+      ...overrides,
+    });
+  const current = account("codex", [99, 40]);
+  const past = "2026-09-03T11:30:00.000Z";
+  it.each([
+    ["the account with the most left", [account("a", [30, 50]), account("b", [10, 20])], "b"],
+    [
+      "the newer reading on a tie",
+      [
+        account("a", [20, 20]),
+        account("b", [20, 20], {
+          usageLimits: {
+            checkedAt: "2026-09-03T11:30:00.000Z",
+            windows: [{ ...window, usedPercent: 20 }],
+          },
+        }),
+      ],
+      "b",
+    ],
+    [
+      "an account whose limit reset",
+      [
+        account("a", [100, 10], {
+          usageLimits: {
+            checkedAt: past,
+            windows: [{ ...window, usedPercent: 100, resetsAt: past }],
+          },
+        }),
+      ],
+      "a",
+    ],
+    [
+      "nothing incompatible, unusable, or nearly exhausted",
+      [
+        account("other-home", [0], { continuation: { groupKey: "codex:home:/other" } }),
+        account("claude", [0], { driver: ProviderDriverKind.make("claudeAgent") }),
+        account("signed-out", [0], { auth: { status: "unauthenticated" } }),
+        account("disabled", [0], { enabled: false }),
+        account("unavailable", [0], { availability: "unavailable" }),
+        account("exhausted", [10, 99]),
+        account("no-readings", null),
+      ],
+      null,
+    ],
+  ] as const)("picks %s", (_name, candidates, expected) => {
+    const picked = pickCodexAccountSwitch({
+      providers: [current, ...candidates],
+      currentInstanceId: current.instanceId,
+      now,
+      limitReached: false,
+    });
+    expect(picked?.target.instanceId ?? null).toBe(expected);
+    if (expected !== null) expect(picked?.reason).toBe("5-hour window 99% used");
+  });
+  it.each([
+    ["below 99%", account("codex", [98, 98])],
+    [
+      "past its reset",
+      account("codex", [100], {
+        usageLimits: {
+          checkedAt: past,
+          windows: [{ ...window, usedPercent: 100, resetsAt: past }],
+        },
+      }),
+    ],
+    [
+      "without a reset time",
+      account("codex", [100], {
+        usageLimits: {
+          checkedAt: past,
+          windows: [{ id: "primary", kind: "session", label: "Session", usedPercent: 100 }],
+        },
+      }),
+    ],
+    ["not Codex", account("codex", [100], { driver: ProviderDriverKind.make("claudeAgent") })],
+  ] as const)("keeps an account %s", (_name, limited) => {
+    expect(
+      pickCodexAccountSwitch({
+        providers: [limited, account("a", [0, 0])],
+        currentInstanceId: limited.instanceId,
+        now,
+        limitReached: false,
+      }),
+    ).toBeNull();
+  });
+  it("takes an account without readings once a run reached the limit, ranked last", () => {
+    const pick = (providers: ReadonlyArray<ServerProvider>, excluded: ReadonlyArray<string> = []) =>
+      pickCodexAccountSwitch({
+        providers: [account("codex", null), ...providers],
+        currentInstanceId: ProviderInstanceId.make("codex"),
+        now,
+        limitReached: true,
+        excludedInstanceIds: new Set(excluded.map((id) => ProviderInstanceId.make(id))),
+      });
+    expect(pick([account("unknown", null), account("known", [95, 95])])).toMatchObject({
+      target: { instanceId: "known" },
+      reason: "usage limit reached",
+    });
+    expect(pick([account("unknown", null)])?.target.instanceId).toBe("unknown");
+    expect(pick([account("unknown", null)], ["unknown"])).toBeNull();
   });
 });
 

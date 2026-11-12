@@ -12,6 +12,7 @@ import {
   runRanAfter,
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
+import { pickCodexAccountSwitch } from "@t3tools/shared/usageLimits";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
 import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
 import {
@@ -72,6 +73,7 @@ import {
   type ProviderSessionId,
   RunId,
   RuntimeMode,
+  type ServerProvider,
   ThreadLinkedPullRequest,
   ThreadId,
   TurnItemId,
@@ -951,6 +953,31 @@ function usageLimitHoldsQueue(
   return resetAt != null && Date.parse(resetAt) > DateTime.toEpochMillis(now);
 }
 
+// shortcut: a limit without a reported reset is assumed to last one Codex session window;
+// read the reset from the failure once managed Codex reports one.
+const UNKNOWN_LIMIT_RESET_MS = 5 * 60 * 60 * 1000;
+
+/** Instances whose latest run on this thread stopped on a usage limit that can still hold. */
+export function usageLimitedInstanceIds(
+  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "turnItems">,
+  now: number,
+): ReadonlySet<ProviderInstanceId> {
+  const limitedIds = new Set<ProviderInstanceId>();
+  for (const instanceId of new Set(projection.runs.map((run) => run.providerInstanceId))) {
+    const limited = usageLimitBlockedRun(
+      projection.runs.filter((run) => run.providerInstanceId === instanceId),
+      projection.turnItems,
+      null,
+    );
+    if (limited === null) continue;
+    const resetAt = latestRootProviderFailure(limited, projection.turnItems)?.resetAt;
+    const stoppedAt = DateTime.toEpochMillis(limited.completedAt ?? limited.requestedAt);
+    const until = resetAt == null ? stoppedAt + UNKNOWN_LIMIT_RESET_MS : Date.parse(resetAt);
+    if (until > now) limitedIds.add(instanceId);
+  }
+  return limitedIds;
+}
+
 function pullRequestSnapshotEndsWatch(
   snapshot: ThreadPullRequestLink["snapshot"],
   watchStartedAt: ThreadPullRequestWatch["startedAt"],
@@ -1525,6 +1552,79 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (yield* probe.pipe(Effect.catchCause(() => Effect.succeed(true)))) return true;
     }
     return false;
+  });
+
+  /**
+   * With auto-switch on, the Codex account a new run should use instead of a limited one, and
+   * the notice that says so. Null keeps the selection.
+   */
+  const resolveCodexAccountSwitch = Effect.fn("Orchestrator.resolveCodexAccountSwitch")(function* (
+    projection: OrchestrationV2ThreadProjection,
+    modelSelection: ModelSelection,
+  ) {
+    if (providerAdapters.listProviders === undefined) return null;
+    const settings = yield* Effect.option(serverSettings.getSettings);
+    if (Option.isNone(settings) || !settings.value.autoSwitchCodexAccounts) return null;
+    const now = DateTime.toEpochMillis(yield* DateTime.now);
+    const limited = usageLimitedInstanceIds(projection, now);
+    const providers = yield* providerAdapters.listProviders();
+    const picked = pickCodexAccountSwitch({
+      providers,
+      currentInstanceId: modelSelection.instanceId,
+      now,
+      limitReached: limited.has(modelSelection.instanceId),
+      excludedInstanceIds: limited,
+    });
+    if (picked === null) return null;
+    // Leaving the session would end its background work, and a start refuses that.
+    const activeThread = projection.providerThreads.find(
+      (candidate) => candidate.id === projection.thread.activeProviderThreadId,
+    );
+    const activeSession = projection.providerSessions.find(
+      (session) => session.id === activeThread?.providerSessionId,
+    );
+    if (
+      activeSession !== undefined &&
+      (yield* sessionHasBackgroundWork(activeSession, projection.providerThreads))
+    )
+      return null;
+    const from = providers.find((provider) => provider.instanceId === modelSelection.instanceId);
+    const name = (provider: ServerProvider | undefined, fallback: string) =>
+      provider?.displayName ?? fallback;
+    return {
+      modelSelection: { ...modelSelection, instanceId: picked.target.instanceId },
+      notice: `Switched Codex account: ${name(from, modelSelection.instanceId)} → ${name(picked.target, picked.target.instanceId)} (${picked.reason})`,
+    };
+  });
+
+  const accountSwitchNoticeItem = (input: {
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+    readonly nodeId: NodeId;
+    readonly providerThreadId: OrchestrationV2Run["providerThreadId"];
+    readonly ordinal: number;
+    readonly now: DateTime.Utc;
+    readonly message: string;
+  }): OrchestrationV2TurnItem => ({
+    id: idAllocator.derive.runSignalTurnItem({
+      runId: input.runId,
+      signal: "codex-account-switch",
+    }),
+    threadId: input.threadId,
+    runId: input.runId,
+    nodeId: input.nodeId,
+    providerThreadId: input.providerThreadId,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: input.ordinal,
+    status: "completed",
+    title: "Codex account switched",
+    startedAt: input.now,
+    completedAt: input.now,
+    updatedAt: input.now,
+    type: "system_notice",
+    message: input.message,
   });
 
   // Runs in every command transaction; avoid reading thousands of finished leaf nodes.
@@ -2207,7 +2307,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const queuedMessage = projection.messages.find(
         (candidate) => candidate.id === storedQueuedRun.userMessageId,
       );
-      const modelSelection = queuedRunModelSelection(projection, storedQueuedRun);
+      let modelSelection = queuedRunModelSelection(projection, storedQueuedRun);
+      // A run that just failed gets its continuation first, which switches on its own.
+      const accountSwitch =
+        options?.failedRunId !== undefined || storedQueuedRun.freshContext === true
+          ? null
+          : yield* resolveCodexAccountSwitch(projection, modelSelection);
+      if (accountSwitch !== null) modelSelection = accountSwitch.modelSelection;
       const queuedRun = {
         ...storedQueuedRun,
         modelSelection,
@@ -2342,7 +2448,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const activeProviderThread = projection.providerThreads.find(
         (candidate) => candidate.id === projection.thread.activeProviderThreadId,
       );
-      const followsCurrent = followsCurrentConversation(queuedMessage);
+      // A run moved to another account continues the conversation the thread already has.
+      const followsCurrent = followsCurrentConversation(queuedMessage) || accountSwitch !== null;
       const freshContext = queuedRun.freshContext === true;
       const contextBoundary = freshContext ? ordinal : contextBoundaryOrdinal(projection.runs);
       // A run queued before a fresh run started is bound to the conversation that run left behind.
@@ -2959,6 +3066,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               yield* notificationTasks(threadId, queuedMessage, projection.subagents),
             ),
           },
+          ...(accountSwitch === null
+            ? []
+            : [
+                {
+                  type: "turn-item.updated" as const,
+                  threadId,
+                  runId: queuedRun.id,
+                  nodeId: rootNodeId,
+                  providerInstanceId: queuedRun.providerInstanceId,
+                  occurredAt: now,
+                  payload: accountSwitchNoticeItem({
+                    threadId,
+                    runId: queuedRun.id,
+                    nodeId: rootNodeId,
+                    providerThreadId: queuedProviderThread.id,
+                    ordinal: Math.max(
+                      userTurnItem.ordinal + 1,
+                      yield* nextTurnItemOrdinal(projection),
+                    ),
+                    now,
+                    message: accountSwitch.notice,
+                  }),
+                },
+              ]),
           {
             type: "run.updated",
             threadId,
@@ -6302,10 +6433,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ]);
   });
 
-  const dispatchMessage = Effect.fn("Orchestrator.dispatchMessage")(function* (
+  const dispatchMessageStart = Effect.fn("Orchestrator.dispatchMessageStart")(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    accountSwitch: { notice?: string },
   ) {
     let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
     if (command.steerFollowUpOfRunId !== undefined) {
@@ -7353,6 +7485,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const supersededMergeBackTransfers = pendingMergeBackTransfers.filter(
       (transfer) => transfer.id !== pendingMergeBackTransfer?.id,
     );
+    const switchedAccount = yield* resolveCodexAccountSwitch(projection, modelSelection);
+    if (switchedAccount !== null) {
+      modelSelection = switchedAccount.modelSelection;
+      accountSwitch.notice = switchedAccount.notice;
+    }
     const now = yield* DateTime.now;
     if (
       !modelSelectionsEqual(projection.thread.modelSelection, modelSelection) ||
@@ -8843,6 +8980,59 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       request: { type: "provider-turn.start", runId },
     } satisfies PendingOrchestrationEffectV2;
     yield* Ref.update(effects, (existing) => [...existing, pendingEffect]);
+  });
+
+  const dispatchMessage = Effect.fn("Orchestrator.dispatchMessage")(function* (
+    command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const accountSwitch: { notice?: string } = {};
+    const result = yield* dispatchMessageStart(command, events, effects, accountSwitch);
+    if (accountSwitch.notice === undefined) return result;
+    // Each start path builds its run differently; the notice follows whichever created it.
+    const pending = yield* Ref.get(events);
+    const created = pending.findLast(
+      (event) =>
+        event.type === "run.created" &&
+        event.threadId === command.threadId &&
+        event.payload.userMessageId === command.messageId,
+    );
+    if (created?.type !== "run.created") return result;
+    const run = created.payload;
+    const nodeId = run.rootNodeId;
+    if (nodeId === null) return result;
+    const runOrdinals = pending.flatMap((event) =>
+      event.type === "turn-item.updated" && event.payload.runId === run.id
+        ? [event.payload.ordinal]
+        : [],
+    );
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "turn-item.updated",
+      threadId: command.threadId,
+      runId: run.id,
+      nodeId,
+      providerInstanceId: run.providerInstanceId,
+      occurredAt: created.occurredAt,
+      payload: accountSwitchNoticeItem({
+        threadId: command.threadId,
+        runId: run.id,
+        nodeId,
+        providerThreadId: run.providerThreadId,
+        ordinal: Math.max(
+          ...runOrdinals.map((ordinal) => ordinal + 1),
+          yield* projectionStore
+            .getNextTurnItemOrdinal(command.threadId)
+            .pipe(mapDispatchError(command)),
+        ),
+        now: created.occurredAt,
+        message: accountSwitch.notice,
+      }),
+    });
+    return result;
   });
 
   const dispatchDelegatedTaskRequest = Effect.fn("orchestrationV2.dispatch.delegatedTaskRequest")(

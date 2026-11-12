@@ -2,6 +2,7 @@ import {
   ProviderInstanceId,
   ProviderSetupError,
   type OrchestrationV2ProviderCapabilities,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -52,6 +53,8 @@ export interface ProviderAdapterRegistryV2Shape {
     },
     ProviderAdapterRegistryV2Error
   >;
+  /** Current snapshots of every live instance, for choosing among accounts. */
+  readonly listProviders?: () => Effect.Effect<ReadonlyArray<ServerProvider>>;
 }
 
 export class ProviderAdapterRegistryV2 extends Context.Service<
@@ -149,6 +152,12 @@ export const layerFromProviderInstanceRegistry: Layer.Layer<
           enabled: instance.enabled,
           capabilities,
         };
+      }),
+      listProviders: Effect.fn("ProviderAdapterRegistry.listProviders")(function* () {
+        return yield* Effect.forEach(
+          yield* instances.listInstances,
+          (instance) => instance.snapshot.getSnapshot,
+        );
       }),
     });
   }),

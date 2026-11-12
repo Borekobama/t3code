@@ -336,3 +336,20 @@ Release `d752f28b2c4a` via `~/t3-fork/deploy.sh` (rollback: deploy `47ebce46c`).
 - Conversation rollback for any ACP agent (protocol limit). Upstream could replay the kept turns as a context
   handoff after rollback instead of hiding it; that touches the orchestrator and is not done here.
 - Native fork (`session/fork`): not advertised by OpenClaw; fork uses the context handoff.
+
+## Codex auto-switch (2026-11-12)
+
+Opt-in setting `autoSwitchCodexAccounts` (default off, "Switch Codex accounts on usage limits"). It moves a Codex
+thread to another enabled, signed-in Codex instance with the same continuation key (one shared Codex home).
+
+- Picker: `pickCodexAccountSwitch` in `packages/shared/src/usageLimits.ts`. Score = lower remaining percent of the
+  5-hour and weekly windows; ties go to the newer `checkedAt`; a passed reset counts as 0 % used.
+- Before a start (`Orchestrator.resolveCodexAccountSwitch`): immediate starts and queued starts that continue the
+  conversation. Triggers on a window at 99 % or more with a future reset, or on a usage-limit stop of that account in
+  the same thread (an unknown reset is assumed to hold 5 hours). Skipped while the active session runs background
+  work. The new run gets a `system_notice` turn item.
+- Mid-work: `CodexAccountSwitchWorker` sends `message.dispatch` with `manualContinuationOfRunId` and command id
+  `codex-switch:<runId>` when a target exists; it never sends without one, so resume-at-reset keeps working.
+- Managed Codex: `CodexManagedProvider` keeps rate-limit windows from live sessions and publishes them in its
+  snapshot. On the mini, managed sessions on 2026-11-12 reported `primary: null, secondary: null`, so the
+  window trigger has no data there today; the usage-limit stop is the trigger that applies.

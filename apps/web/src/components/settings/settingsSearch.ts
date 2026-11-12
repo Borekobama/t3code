@@ -460,6 +460,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["usage quota rate limit reset recover continue"],
   },
   {
+    id: "auto-switch-codex-accounts",
+    title: "Switch Codex accounts on usage limits",
+    to: "/settings/threads",
+    searchTerms: ["usage quota rate limit chatgpt account rotate failover continue"],
+  },
+  {
     id: "working-shelf",
     title: msg("Working section"),
     to: "/settings/general",

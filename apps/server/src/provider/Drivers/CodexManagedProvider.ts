@@ -3,8 +3,10 @@ import {
   ProviderSetupError,
   TextGenerationError,
   type CodexSettings,
+  type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Ref from "effect/Ref";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
@@ -22,6 +24,7 @@ import {
   probeCodexSkillsForCwd,
 } from "../CodexProvider.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
+import { applyUsageLimitsUpdate } from "@t3tools/provider-core/server/usageLimits";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import {
   type ProviderDriverCreateInput,
@@ -60,6 +63,8 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     homePath: runtime.homeLayout.sharedHomePath,
     shadowHomePath: runtime.homeLayout.mode === "authOverlay" ? runtime.homePath : null,
   };
+  // Probes cannot read ChatGPT usage; a session's rate-limit updates are the only readings.
+  const liveUsage = yield* Ref.make<ServerProviderUsageLimits | undefined>(undefined);
   const pending = makePendingCodexProvider({ ...config, enabled, customModels: [] }).pipe(
     Effect.map((draft) =>
       stamp({
@@ -106,7 +111,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
         message: "Sign in with ChatGPT to use Codex.",
         auth: { status: "unauthenticated" as const },
       };
-    const usageLimits = {
+    const usageLimits = (yield* Ref.get(liveUsage)) ?? {
       checkedAt: base.checkedAt,
       windows: [],
       unavailable: {
@@ -236,14 +241,38 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   yield* runtime.auth.controller.subscribe("managed-codex-snapshot").pipe(
     Stream.filter((state) => ["idle", "succeeded", "failed", "cancelled"].includes(state.phase)),
     // Sign-out interrupts in-flight probes; keep listening for its subsequent idle refresh.
-    Stream.runForEach(() => snapshot.refresh.pipe(Effect.ignoreCause({ log: true }))),
+    // Readings belong to the account that reported them.
+    Stream.runForEach(() =>
+      Ref.set(liveUsage, undefined).pipe(
+        Effect.andThen(snapshot.refresh),
+        Effect.ignoreCause({ log: true }),
+      ),
+    ),
     Effect.forkScoped,
   );
   const resolveRuntime = runtime.auth.controller.withAccess!(runtime.resolve);
   // Launch settings bind the refresh command to the signed-in profile. The registry
   // already wraps openSession in withAccess, so resolve without re-entering it.
   const orchestrationAdapter = yield* createCodexAdapterV2(input, {
-    onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+    onUsageLimits: (update) =>
+      Ref.updateAndGet(liveUsage, (previous) =>
+        applyUsageLimitsUpdate({
+          previous: previous ?? { checkedAt: update.checkedAt, windows: [] },
+          update,
+          checkedAt: update.checkedAt,
+        }),
+      ).pipe(
+        // Complete replaces the "unsupported" placeholder that partial updates leave alone.
+        Effect.flatMap((limits) =>
+          limits === undefined || limits.windows.length === 0
+            ? Effect.void
+            : snapshot.applyUsageLimits({
+                checkedAt: limits.checkedAt,
+                windows: limits.windows,
+                complete: true,
+              }),
+        ),
+      ),
     resolveRuntime: runtime.resolve,
   }).pipe(
     Effect.mapError(

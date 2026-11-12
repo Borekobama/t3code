@@ -661,6 +661,80 @@ export function remainingPercent(window: ServerProviderUsageWindow): number {
   return Math.round(100 - Math.max(0, Math.min(100, window.usedPercent)));
 }
 
+const CODEX_SWITCH_USED_PERCENT = 99;
+
+/** Codex plan windows; a window whose reset has passed counts as unused. */
+function codexPlanWindows(provider: ServerProvider, now: number) {
+  return (provider.usageLimits?.windows ?? [])
+    .filter((window) => window.kind === "session" || window.kind === "weekly")
+    .map((window) =>
+      window.resetsAt !== undefined && Date.parse(window.resetsAt) <= now
+        ? { ...window, usedPercent: 0 }
+        : window,
+    );
+}
+
+/**
+ * Picks another Codex account that shares the current one's Codex home. Without `limitReached`
+ * the current account must have a plan window at 99% with a future reset, and only accounts
+ * with readings qualify. `limitReached` means a run already stopped on the current account's
+ * limit, so accounts without readings qualify too, ranked last.
+ */
+export function pickCodexAccountSwitch(input: {
+  readonly providers: ReadonlyArray<ServerProvider>;
+  readonly currentInstanceId: ProviderInstanceId;
+  readonly now: number;
+  readonly limitReached: boolean;
+  /** Accounts this thread already found limited. */
+  readonly excludedInstanceIds?: ReadonlySet<ProviderInstanceId>;
+}): { readonly target: ServerProvider; readonly reason: string } | null {
+  const current = input.providers.find(
+    (provider) => provider.instanceId === input.currentInstanceId,
+  );
+  const groupKey = current?.continuation?.groupKey;
+  if (current?.driver !== "codex" || groupKey === undefined) return null;
+  const exhausted = codexPlanWindows(current, input.now).find(
+    (window) =>
+      window.usedPercent >= CODEX_SWITCH_USED_PERCENT &&
+      window.resetsAt !== undefined &&
+      Date.parse(window.resetsAt) > input.now,
+  );
+  if (!input.limitReached && exhausted === undefined) return null;
+  let best: { provider: ServerProvider; score: number; checkedAt: number } | null = null;
+  for (const provider of input.providers) {
+    if (
+      provider.instanceId === current.instanceId ||
+      provider.driver !== "codex" ||
+      provider.continuation?.groupKey !== groupKey ||
+      !provider.enabled ||
+      !isProviderAvailable(provider) ||
+      provider.auth.status !== "authenticated" ||
+      input.excludedInstanceIds?.has(provider.instanceId)
+    )
+      continue;
+    const windows = codexPlanWindows(provider, input.now);
+    if (windows.length === 0 && !input.limitReached) continue;
+    if (windows.some((window) => window.usedPercent >= CODEX_SWITCH_USED_PERCENT)) continue;
+    const score = windows.length === 0 ? -1 : Math.min(...windows.map(remainingPercent));
+    const checkedAt = Date.parse(provider.usageLimits?.checkedAt ?? "") || 0;
+    if (
+      best === null ||
+      score > best.score ||
+      (score === best.score && checkedAt > best.checkedAt)
+    ) {
+      best = { provider, score, checkedAt };
+    }
+  }
+  if (best === null) return null;
+  return {
+    target: best.provider,
+    reason:
+      input.limitReached || exhausted === undefined
+        ? "usage limit reached"
+        : `${exhausted.kind === "session" ? "5-hour" : "weekly"} window ${Math.round(exhausted.usedPercent)}% used`,
+  };
+}
+
 function resetMillis(window: ServerProviderUsageWindow): number | null {
   if (window.resetsAt === undefined) return null;
   const at = Date.parse(window.resetsAt);

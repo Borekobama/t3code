@@ -13,6 +13,7 @@ import {
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurnTokenUsage,
   type OrchestrationV2ThreadProjection,
+  type ServerProvider,
   ProjectId,
   ProviderInstanceId,
   ProviderSessionId,
@@ -47,6 +48,7 @@ import {
   canReuseCodexContextUsage,
 } from "../Adapters/CodexAdapterV2.ts";
 import { AcpProviderCapabilitiesV2 } from "@t3tools/provider-acp/server/adapter";
+import * as CodexAccountSwitchWorker from "../CodexAccountSwitchWorker.ts";
 import * as EventSink from "../EventSink.ts";
 import * as EventStore from "../EventStore.ts";
 import * as LegacyV1ThreadImporter from "../legacy/LegacyV1ThreadImporter.ts";
@@ -404,6 +406,71 @@ function makeTestAdapter(input: {
         return runtime;
       }),
   };
+}
+
+const SHARED_CODEX_HOME = "codex:shared-native-account-history";
+const SPARE_CODEX_SELECTION: ModelSelection = {
+  ...CODEX_MODEL_SELECTION,
+  instanceId: ProviderInstanceId.make("codex-spare"),
+};
+
+/** A signed-in Codex account of the shared home, optionally with a 5-hour reading. */
+function codexAccount(
+  instanceId: ProviderInstanceId,
+  displayName: string,
+  session?: { readonly usedPercent: number; readonly resetsAt: string },
+): ServerProvider {
+  return {
+    instanceId,
+    driver: CODEX_DRIVER,
+    displayName,
+    enabled: true,
+    installed: true,
+    version: null,
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-11-12T00:00:00.000Z",
+    models: [],
+    slashCommands: [],
+    skills: [],
+    continuation: { groupKey: SHARED_CODEX_HOME },
+    ...(session === undefined
+      ? {}
+      : {
+          usageLimits: {
+            checkedAt: "2026-11-12T00:00:00.000Z",
+            windows: [{ id: "primary", kind: "session", label: "Session", ...session }],
+          },
+        }),
+  };
+}
+
+function codexAccountsRegistry(
+  adapters: ReadonlyArray<ProviderAdapter.ProviderAdapterV2["Service"]>,
+  providers: Effect.Effect<ReadonlyArray<ServerProvider>>,
+) {
+  return Layer.succeed(
+    ProviderAdapterRegistry.ProviderAdapterRegistryV2,
+    ProviderAdapterRegistry.ProviderAdapterRegistryV2.of({
+      get: (instanceId) => {
+        const adapter = adapters.find((candidate) => candidate.instanceId === instanceId);
+        return adapter === undefined
+          ? Effect.fail(
+              new ProviderAdapterRegistry.ProviderAdapterRegistryLookupError({ instanceId }),
+            )
+          : Effect.succeed(adapter);
+      },
+      list: () => Effect.succeed(adapters.map((adapter) => adapter.instanceId)),
+      getMetadata: () =>
+        Effect.succeed({
+          driver: CODEX_DRIVER,
+          continuationKey: SHARED_CODEX_HOME,
+          enabled: true,
+          capabilities: CodexProviderCapabilitiesV2,
+        }),
+      listProviders: () => providers,
+    }),
+  );
 }
 
 const waitForIdle = Effect.fn("ProviderSwitchTest.waitForIdle")(function* (
@@ -2411,6 +2478,249 @@ describe("orchestration v2 provider switching", () => {
           (yield* Ref.get(capturedTurns)).map((turn) => turn.text),
           ["First account turn", "Alternate account turn"],
         );
+      }),
+    ),
+  );
+
+  it.live.each([true, false])(
+    "moves a start off an exhausted Codex account only when auto-switch is %s",
+    (autoSwitch) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const cwd = yield* checkpointWorkspace(`codex-auto-switch-${autoSwitch}`);
+          const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+          const resetsAt = DateTime.formatIso(DateTime.add(yield* DateTime.now, { hours: 2 }));
+          const mainUsed = yield* Ref.make(40);
+          const providers = Ref.get(mainUsed).pipe(
+            Effect.map((usedPercent) => [
+              codexAccount(CODEX_MODEL_SELECTION.instanceId, "Main", { usedPercent, resetsAt }),
+              codexAccount(SPARE_CODEX_SELECTION.instanceId, "Spare", {
+                usedPercent: 10,
+                resetsAt,
+              }),
+            ]),
+          );
+          const adapters = [CODEX_MODEL_SELECTION, SPARE_CODEX_SELECTION].map((modelSelection) =>
+            makeTestAdapter({
+              instanceId: modelSelection.instanceId,
+              driver: CODEX_DRIVER,
+              capabilities: CodexProviderCapabilitiesV2,
+              modelSelection,
+              responseByRunOrdinal: {},
+              capturedTurns,
+            }),
+          );
+          const switchThreadId = ThreadId.make(`thread:codex-auto-switch:${autoSwitch}`);
+          const projection = yield* Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+            const send = (name: string) =>
+              orchestrator.dispatch({
+                type: "message.dispatch",
+                createdBy: "user",
+                creationSource: "web",
+                commandId: CommandId.make(`command:codex-auto-switch:${autoSwitch}:${name}`),
+                threadId: switchThreadId,
+                messageId: MessageId.make(`message:codex-auto-switch:${autoSwitch}:${name}`),
+                text: name,
+                attachments: [],
+                // An explicit pick of the exhausted account is overridden too.
+                modelSelection: CODEX_MODEL_SELECTION,
+                dispatchMode: { type: "start_immediately" },
+              });
+            yield* orchestrator.dispatch({
+              type: "thread.create",
+              createdBy: "user",
+              creationSource: "web",
+              commandId: CommandId.make(`command:codex-auto-switch:${autoSwitch}:create`),
+              threadId: switchThreadId,
+              projectId: ProjectId.make("project:codex-auto-switch"),
+              title: "Codex auto-switch",
+              modelSelection: CODEX_MODEL_SELECTION,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: cwd,
+            });
+            yield* send("Below the limit");
+            yield* worker.drain();
+            yield* waitForIdle(switchThreadId);
+            yield* Ref.set(mainUsed, 99);
+            yield* send("At the limit");
+            yield* worker.drain();
+            yield* waitForIdle(switchThreadId);
+            return yield* orchestrator.getThreadProjection(switchThreadId);
+          }).pipe(
+            Effect.provide(
+              ProviderReplayHarness.layerWithRegistry(
+                { name: `codex-auto-switch-${autoSwitch}`, runtimePolicyOverride: { cwd } },
+                codexAccountsRegistry(adapters, providers),
+                { autoSwitchCodexAccounts: autoSwitch },
+              ),
+            ),
+          );
+          const target = autoSwitch ? SPARE_CODEX_SELECTION : CODEX_MODEL_SELECTION;
+          assert.deepEqual(
+            projection.runs.map((run) => [run.providerInstanceId, run.status]),
+            [
+              [CODEX_MODEL_SELECTION.instanceId, "completed"],
+              [target.instanceId, "completed"],
+            ],
+          );
+          assert.equal(projection.thread.providerInstanceId, target.instanceId);
+          const turns = yield* Ref.get(capturedTurns);
+          assert.equal(turns[1]?.nativeThreadId, turns[0]?.nativeThreadId);
+          assert.lengthOf(projection.contextHandoffs, 0);
+          assert.deepEqual(
+            projection.turnItems.flatMap((item) =>
+              item.type === "system_notice" ? [[item.runId, item.message]] : [],
+            ),
+            autoSwitch
+              ? [
+                  [
+                    projection.runs[1]!.id,
+                    "Switched Codex account: Main → Spare (5-hour window 99% used)",
+                  ],
+                ]
+              : [],
+          );
+        }),
+      ),
+  );
+
+  it.live("continues a Codex run limited mid-work on another account, then its queue", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const cwd = yield* checkpointWorkspace("codex-limit-switch");
+        const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        // Managed Codex reports no windows; the failure alone marks Main as limited.
+        const providers = Effect.succeed([
+          codexAccount(CODEX_MODEL_SELECTION.instanceId, "Main"),
+          codexAccount(SPARE_CODEX_SELECTION.instanceId, "Spare"),
+        ]);
+        const adapters = [
+          makeTestAdapter({
+            instanceId: CODEX_MODEL_SELECTION.instanceId,
+            driver: CODEX_DRIVER,
+            capabilities: CodexProviderCapabilitiesV2,
+            modelSelection: CODEX_MODEL_SELECTION,
+            responseByRunOrdinal: {},
+            capturedTurns,
+            holdFirstTurn: started,
+            releaseFirstTurn: release,
+            failedRunOrdinals: new Set([1]),
+            failure: makeProviderFailure({
+              message: "Usage limit reached",
+              class: "usage_limit",
+              code: "usage_limit",
+            }),
+          }),
+          makeTestAdapter({
+            instanceId: SPARE_CODEX_SELECTION.instanceId,
+            driver: CODEX_DRIVER,
+            capabilities: CodexProviderCapabilitiesV2,
+            modelSelection: SPARE_CODEX_SELECTION,
+            responseByRunOrdinal: {},
+            capturedTurns,
+          }),
+        ];
+        const limitThreadId = ThreadId.make("thread:codex-limit-switch");
+        const projection = yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const send = (text: string, dispatchMode: "start_immediately" | "queue_after_active") =>
+            orchestrator.dispatch({
+              type: "message.dispatch",
+              createdBy: "user",
+              creationSource: "web",
+              commandId: CommandId.make(`command:codex-limit-switch:${text}`),
+              threadId: limitThreadId,
+              messageId: MessageId.make(`message:codex-limit-switch:${text}`),
+              text,
+              attachments: [],
+              modelSelection: CODEX_MODEL_SELECTION,
+              dispatchMode: { type: dispatchMode },
+            });
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            createdBy: "user",
+            creationSource: "web",
+            commandId: CommandId.make("command:codex-limit-switch:create"),
+            threadId: limitThreadId,
+            projectId: ProjectId.make("project:codex-limit-switch"),
+            title: "Codex limit switch",
+            modelSelection: CODEX_MODEL_SELECTION,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: cwd,
+          });
+          yield* send("Original work", "start_immediately");
+          yield* Deferred.await(started);
+          yield* send("Queued work", "queue_after_active");
+          const [limited] = (yield* orchestrator.getThreadProjection(limitThreadId)).runs;
+          yield* Deferred.succeed(release, undefined);
+          yield* orchestrator.streamStoredEvents.pipe(
+            Stream.filter(
+              ({ event }) =>
+                event.type === "run.updated" &&
+                event.runId === limited!.id &&
+                event.payload.status === "failed",
+            ),
+            Stream.runHead,
+          );
+          yield* worker.drain();
+          const held = yield* orchestrator.getThreadProjection(limitThreadId);
+          const commands = CodexAccountSwitchWorker.codexAccountSwitchCommands({
+            projection: held,
+            runId: limited!.id,
+            providers: yield* providers,
+            now: DateTime.toEpochMillis(yield* DateTime.now),
+          });
+          assert.deepEqual(
+            commands.map((command) => command.type),
+            ["message.dispatch"],
+          );
+          // A repeated failure event sends the same commands again; neither starts a second run.
+          for (const command of [...commands, ...commands]) {
+            yield* orchestrator.dispatch(command);
+          }
+          yield* worker.drain();
+          yield* waitForIdle(limitThreadId);
+          yield* worker.drain();
+          return yield* orchestrator.getThreadProjection(limitThreadId);
+        }).pipe(
+          Effect.provide(
+            ProviderReplayHarness.layerWithRegistry(
+              { name: "codex-limit-switch", runtimePolicyOverride: { cwd } },
+              codexAccountsRegistry(adapters, providers),
+              { autoSwitchCodexAccounts: true },
+            ),
+          ),
+        );
+        const turns = yield* Ref.get(capturedTurns);
+        assert.deepEqual(
+          turns.map((turn) => [turn.modelSelection.instanceId, turn.text]),
+          [
+            [CODEX_MODEL_SELECTION.instanceId, "Original work"],
+            [SPARE_CODEX_SELECTION.instanceId, "Continue where you left off."],
+            [SPARE_CODEX_SELECTION.instanceId, "Queued work"],
+          ],
+        );
+        assert.deepEqual(new Set(turns.map((turn) => turn.nativeThreadId)).size, 1);
+        assert.deepEqual(
+          projection.runs.map((run) => run.status),
+          ["failed", "completed", "completed"],
+        );
+        const notices = projection.turnItems.flatMap((item) =>
+          item.type === "system_notice" ? [item.message] : [],
+        );
+        assert.deepEqual(notices, [
+          "Switched Codex account: Main → Spare (usage limit reached)",
+          "Switched Codex account: Main → Spare (usage limit reached)",
+        ]);
       }),
     ),
   );
