@@ -167,6 +167,40 @@ than in `readMcpContext()` itself. Same single choke point.
   example a Gateway that is down or a rejected setup.
 - Whether a fork works was not tested: OpenClaw does not advertise `session/fork`.
 
+## Phase 3 progress (2026-11-12)
+
+Host setup on the mini, all as user `admin`:
+
+- T3 server: patched release `47ebce46c` runs as LaunchAgent `local.t3code-fork` on `127.0.0.1:3773` with
+  `--base-dir ~/.t3` and telemetry off. Tailscale Serve maps `https://mac-mini-m6.tail5d38a1.ts.net:8443` to
+  it (tailnet only); the fleet dashboard keeps 443. `t3 service install` was not usable: it downloads the
+  stock release binary even when run from the fork, and that binary crash-looped on the newer state file.
+  `ops/deploy.sh` builds a commit as a release worktree under `~/t3-fork/releases/` and switches
+  `~/t3-fork/current`; deploying an older commit is the rollback.
+- Claude Code CLI 2.1.322 at `~/.local/bin/claude`, logged in (Max) from the GUI session. SSH sessions cannot
+  read the login keychain; `ops/gui-run.sh` runs keychain-bound checks as a one-shot GUI LaunchAgent.
+- OpenClaw Gateway: LaunchAgent `ai.openclaw.gateway`, loopback `127.0.0.1:18789`, token auth, model
+  `anthropic/claude-opus-5-5` on the `claude-cli` runtime; no API key. The Gateway service PATH is fixed by
+  OpenClaw on macOS, so `/opt/homebrew/bin/claude` links to `~/.local/bin/claude`.
+- OpenClaw hardening: `tools.profile coding`, `tools.deny [group:web, cron]`, elevated off, browser plugin
+  off, `tools.fs.workspaceOnly`, exec preset `cautious` (allowlist empty, ask on miss, fallback deny). A shell
+  command with no approver attached was denied. `security audit --deep`: 0 critical; the deep probe lacks
+  `operator.read` (no device pairing to grant it to).
+- T3 providers: Claude (native), 4 managed ChatGPT Codex instances (`Codex - 0..3`, four distinct accounts),
+  OpenClaw as Local ACP command with Per-session MCP = None. Remote ChatGPT sign-in ends on a localhost page
+  on the mini; paste that URL into T3.
+- Fix found during setup: `47ebce46c fix(web): show Per-session MCP for local ACP commands`.
+
+First live T3 → OpenClaw thread (project `~/Developer/openclaw-t3-test`, Supervised):
+
+- Turn 1: exact reply `T3_OPENCLAW_OK`. No per-session MCP error.
+- Turn 2 (follow-up): recalled the previous reply, read `README.md` from the project (marker `tangerine-42`),
+  reported cwd `openclaw-t3-test`. File reads needed no approval.
+- OpenClaw exposes one model entry (`Default`) plus its ACP config options (thought level, fast mode, ...).
+
+Not yet tested live: exec approval accept/deny through T3, cancel, close/reopen, T3 and Gateway restarts,
+two concurrent OpenClaw threads, the 30-minute load run, and Codex per-account threads.
+
 ## Open items
 
 - Phase 3 host setup needs the user: Claude Code login, OpenClaw onboarding, Codex accounts in T3, and pairing.
