@@ -1,6 +1,7 @@
 // Dronk's Telegram plugin (runs inside the OpenClaw Gateway): answers the T3 cards from t3-watch.py
 // ("t3:<a|s|d|f>:<id>", f = full access for the current task), and puts the part of a reply after a
-// "[[details]]" line behind a Details button ("more:<id>"). See runbook.md, "Telegram alerts for T3 threads".
+// "[[details]]" line behind a Details button ("more:<id>"), and closes project topics ("tp:c:<topic>").
+// See runbook.md, "Telegram alerts for T3 threads".
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
@@ -11,6 +12,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 const OWNER = "640306272";
 const HOME = NodeOS.homedir();
 const T3 = NodePath.join(HOME, "t3-fork/t3.sh");
+const TOPICS = NodePath.join(HOME, "t3-fork/t3-topics.py");
 const REQUESTS = NodePath.join(HOME, ".t3-watch-requests.json"); // written by t3-watch.py
 // Full-access grants; t3-watch.py switches the thread back to Supervised when the run ends.
 const GRANTS = NodePath.join(HOME, ".t3-watch-grants.json");
@@ -120,6 +122,35 @@ export default definePluginEntry({
           requests[id] = { ...request, status: choice.decision };
           writeJson(REQUESTS, requests);
         }
+        return { handled: true };
+      },
+    });
+
+    api.registerInteractiveHandler({
+      channel: "telegram",
+      namespace: "tp",
+      handler: async (ctx: any) => {
+        if (ctx.senderId !== OWNER || !ctx.auth?.isAuthorizedSender) return { handled: true };
+        const [code, topic] = String(ctx.callback.payload).split(":");
+        if (code !== "c" || !/^\d+$/.test(topic ?? "")) return { handled: true };
+        // t3-topics.py posts "Topic closed" into the topic before closing it.
+        const result = await new Promise<Result>((resolve) => {
+          NodeChildProcess.execFile(
+            "/usr/bin/python3",
+            [TOPICS, "close", "--topic", topic],
+            { timeout: 60_000 },
+            (error, stdout, stderr) => {
+              const detail =
+                (stderr || stdout || error?.message || "").trim().split("\n").pop() ?? "";
+              resolve({ ok: !error, detail, stdout });
+            },
+          );
+        });
+        if (result.ok) await ctx.respond.clearButtons();
+        else
+          await ctx.respond.reply({
+            text: `⚠️ Topic not closed: ${result.detail || "unknown error"}`,
+          });
         return { handled: true };
       },
     });

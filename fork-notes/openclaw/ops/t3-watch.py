@@ -11,6 +11,9 @@ card with the Full access button. The OpenClaw plugin `dronk-telegram` (ops/open
 answers the taps, using the map this script writes to ~/.t3-watch-requests.json. Full access
 lasts one task: the plugin records the run in ~/.t3-watch-grants.json and this script switches
 the thread back to Supervised when that run ends.
+
+A project with an open topic (see t3-topics.py) gets its cards in that topic; other projects
+post to the T3 topic. A finished thread in a project topic gets a "Close topic" button.
 """
 import hashlib
 import json
@@ -30,8 +33,10 @@ OPENCLAW = f"{HOME}/.openclaw/bin/openclaw"
 STATE = f"{HOME}/.t3-watch-state.json"
 REQUESTS = f"{HOME}/.t3-watch-requests.json"
 GRANTS = f"{HOME}/.t3-watch-grants.json"
-# Forum topic "T3" in the group "OpenClaw - Mac Mini M6" (owner-only); was the owner DM 640306272.
-TELEGRAM_TO = "-1003914415301:topic:5"
+# Owner-only forum group "OpenClaw - Mac Mini M6"; topic 5 is "T3". Before 2026-11-14: the owner DM.
+GROUP = "-1003914415301"
+TELEGRAM_TO = f"{GROUP}:topic:5"
+TOPICS = f"{HOME}/.t3-watch-topics.json"  # written by t3-topics.py
 LINK_BASE = "https://mac-mini-m6.tail5d38a1.ts.net:8443/"
 THREAD_SCAN_SECONDS = 120
 COMMAND_MAX = 700
@@ -68,7 +73,7 @@ def threads(project_id):
 def pending_requests():
     """Pending approvals and questions; a thread waiting on one still reports status "running"."""
     rows = query(
-        "select r.runtime_request_id, r.thread_id, r.kind, r.payload_json, t.title, p.title"
+        "select r.runtime_request_id, r.thread_id, r.kind, r.payload_json, t.title, p.title, t.project_id"
         " from orchestration_v2_projection_runtime_requests r"
         " left join orchestration_v2_projection_threads t on t.thread_id = r.thread_id"
         " left join projection_projects p on p.project_id = t.project_id"
@@ -114,12 +119,21 @@ def esc(text):
     return "".join("\\" + c if c in "*_`[]" else c for c in text)
 
 
-def send(text, rows):
+def project_topics():
+    """Open project topics: {projectId: topic id}."""
+    try:
+        projects = json.load(open(TOPICS)).get("projects", {})
+    except (OSError, ValueError):
+        return {}
+    return {pid: e["topic"] for pid, e in projects.items() if not e.get("closed")}
+
+
+def send(text, rows, target=TELEGRAM_TO):
     """One buttons block per row of buttons."""
     blocks = [{"type": "text", "text": text}] + [{"type": "buttons", "buttons": row} for row in rows]
     presentation = {"blocks": blocks}
     subprocess.run(
-        [OPENCLAW, "message", "send", "--channel", "telegram", "-t", TELEGRAM_TO,
+        [OPENCLAW, "message", "send", "--channel", "telegram", "-t", target,
          "--presentation", json.dumps(presentation)],
         capture_output=True, text=True, timeout=60, check=True,
     )
@@ -140,14 +154,14 @@ def short_id(value):
 def supervised_jobs():
     """Supervised threads with an active run: these are the ones that will keep asking."""
     rows = query(
-        "select t.thread_id, t.title, p.title from orchestration_v2_projection_threads t"
+        "select t.thread_id, t.title, p.title, t.project_id from orchestration_v2_projection_threads t"
         " left join projection_projects p on p.project_id = t.project_id"
         " where t.runtime_mode = 'approval-required' and t.archived_at is null and t.deleted_at is null"
         " and exists (select 1 from orchestration_v2_projection_runs r where r.thread_id = t.thread_id"
         f" and r.status in ({','.join('?' * len(ACTIVE_RUNS))}))",
         *ACTIVE_RUNS,
     )
-    return {tid: (title, project) for tid, title, project in rows}
+    return {tid: (title, project, pid) for tid, title, project, pid in rows}
 
 
 def job_card(tid, title, project, env_id):
@@ -229,6 +243,11 @@ def main():
     prev_requests = set(state.get("requests", []))
     env_id = state.get("env")
     current, alerts = prev_threads, []
+    topics = project_topics()
+
+    def target(project_id):
+        topic = topics.get(project_id)
+        return f"{GROUP}:topic:{topic}" if topic else TELEGRAM_TO
 
     scan = previous is None or time.time() - state.get("scannedAt", 0) >= THREAD_SCAN_SECONDS
     if scan:
@@ -250,31 +269,35 @@ def main():
                 # Unchanged threads stay quiet; a new or changed thread alerts once per state.
                 if previous is not None and changed and status in STATUS:
                     text = f"{STATUS[status]}: **{esc(t.get('title') or 'thread')}** · {esc(project_title)}"
-                    alerts.append((text, [[open_button(url)]], None))
+                    rows = [[open_button(url)]]
+                    if status == "completed" and project_id in topics:
+                        close = {"label": "Close topic", "action": {"type": "callback", "value": f"tp:c:{topics[project_id]}"}}
+                        rows = [[open_button(url), close]]
+                    alerts.append((text, rows, None, target(project_id)))
 
     revert_grants()
     jobs = supervised_jobs()
     seen_jobs = set(state.get("jobs", []))
     if previous is not None:
-        for tid, (title, project) in jobs.items():
+        for tid, (title, project, pid) in jobs.items():
             if tid not in seen_jobs:
-                alerts.append(job_card(tid, title, project, env_id))
+                alerts.append((*job_card(tid, title, project, env_id), target(pid)))
     pending = pending_requests()
     if previous is not None:
-        for rid, (tid, kind, payload_json, title, project) in pending.items():
+        for rid, (tid, kind, payload_json, title, project, pid) in pending.items():
             if rid not in prev_requests:
-                alerts.append(request_card(rid, tid, kind, payload_json, title, project, env_id))
+                alerts.append((*request_card(rid, tid, kind, payload_json, title, project, env_id), target(pid)))
 
     requests = {}
     try:
         requests = json.load(open(REQUESTS))
     except (OSError, ValueError):
         pass
-    for text, rows, mapping in alerts:
+    for text, rows, mapping, to in alerts:
         if mapping:
             requests[mapping[0]] = mapping[1]
             save(REQUESTS, dict(sorted(requests.items(), key=lambda kv: -kv[1].get("at", 0))[:KEEP_REQUESTS]))
-        send(text, rows)
+        send(text, rows, to)
         time.sleep(1)
 
     save(STATE, {

@@ -168,6 +168,20 @@ openclaw mcp status --verbose
 - Topics: General (1) for chat, **T3** (5) for the watcher, **Ops** (6) for the project-watch automation
   (`openclaw automations edit <id> --to -1003914415301 --thread-id 6`).
 - OpenClaw's own exec approval prompts still go to the owner DM (`execApprovals.target: dm`).
+- **Project topics** (`~/t3-fork/t3-topics.py`, fork `ops/t3-topics.py`): one topic per T3 project, with an
+  icon from Telegram's allowed set (`t3-topics.py icons`). `open --project <id|title> [--name] [--emoji]` creates
+  the topic (or reopens a closed one) and posts an intro; `close --topic N | --project <id>` posts "Topic closed"
+  and closes it; `list` shows the map `~/.t3-watch-topics.json` (0600, lock file next to it). The bot token is
+  read inside the script and never printed.
+- t3-watch.py sends a project's cards to its open topic, everything else to T3. A finished thread in a project
+  topic gets a **Close topic** button (`tp:c:<topic>`), handled by the dronk-telegram plugin.
+- Dronk's rules (workspace AGENTS.md, "Telegram group and project topics"): open the project topic before
+  starting a T3 thread, never create topics with the message tool, close only when the user asks.
+- Live typing: `channels.telegram.streaming.mode: partial` streams the answer text by editing a preview message.
+  OpenClaw no longer uses Telegram's native `sendMessageDraft`, and no plugin hook exposes partial text.
+- Known flake: about 2 in 77 sends on 2026-11-14 failed with `ECONNRESET` (`syscall: read`) on the Gateway's
+  Telegram connection. Final text replies get one automatic retry; interactive payloads do not. t3-watch.py does
+  not save state when a send fails, so it re-sends that batch 15 s later (possible duplicate).
 - DM topics (BotFather threaded mode) did not work on 2026-11-14: `getMe` kept `has_topics_enabled: false`,
   `createForumTopic` in the DM failed with "the chat is not a forum", and a user-started thread hung.
 
