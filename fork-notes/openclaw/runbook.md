@@ -309,14 +309,30 @@ Restore T3 data:
 Restore the Codex sign-in only if the old machine no longer uses it: Codex refresh tokens are single-use.
 Tested 2026-11-12: restored `statev2.sqlite` passed `integrity_check` with the same thread count as live.
 
-## Exec approvals (known limitation)
+## Exec approvals
 
-OpenClaw does not relay exec approvals to T3 over ACP. The approval waits in the Gateway for up to
-30 minutes, then is denied. Answer it in the dashboard above, or on the mini:
+Dronk's exec runs through OpenClaw's reviewer first (`tools.exec.mode: auto`, Haiku). Low-risk commands run
+without a prompt. Anything it defers goes to a human:
+
+- Telegram: `channels.telegram.execApprovals` (`target: dm`, approver 640306272) sends the prompt with buttons
+  to your DM. This works for sessions that did not start in Telegram too (tested 2026-11-14 from an
+  `openclaw agent` CLI session). After a decision or timeout, the message changes to "Exec approval resolved".
+- OpenClaw does not relay exec approvals to T3 over ACP, so a T3-started OpenClaw thread shows nothing in T3.
+  Answer it in Telegram, the dashboard above, or on the mini:
 
 ```bash
 openclaw approvals pending
 openclaw approvals resolve <id> allow-once   # or allow-always, deny
 ```
 
-Or allowlist safe binaries: `openclaw approvals allowlist add --agent main /usr/bin/git`.
+- The approval itself expires after 30 minutes, but a claude-cli run gives up sooner: in the test the run
+  aborted after about 12 minutes (`run-aborted`), and the approval was cancelled as denied.
+- A command whose executable path starts with `~/` is denied before any prompt (`SYSTEM_RUN_DENIED: approval
+  cannot safely bind this interpreter/runtime command`). OpenClaw cannot resolve the file it must bind the
+  approval to. Use absolute paths.
+- T3 projects: Dronk runs `/Users/admin/t3-fork/t3.sh project add|rename|remove` through exec, as the
+  workspace `AGENTS.md` says. In the test, add was auto-allowed (medium risk) and remove went to a human
+  (high risk).
+
+Or allowlist safe binaries: `openclaw approvals allowlist add --agent main /usr/bin/git`. On darwin the
+allowlist does not auto-run commands; the reviewer still decides.
