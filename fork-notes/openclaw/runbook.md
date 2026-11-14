@@ -145,13 +145,39 @@ openclaw mcp status --verbose
 
 ## Telegram alerts for T3 threads
 
-- LaunchAgent `local.t3-watch` runs `~/t3-fork/t3-watch.py` every 2 minutes (log `~/Library/Logs/t3-watch.log`,
-  state `~/.t3-watch-state.json`). No model is used.
-- It messages the user's Telegram once per change:
-  - a thread needs approval or an answer, read from pending runtime requests (a waiting thread still reports
-    `running`)
+- LaunchAgent `local.t3-watch` runs `~/t3-fork/t3-watch.py` every 15 s (log `~/Library/Logs/t3-watch.log`,
+  state `~/.t3-watch-state.json`). Each run checks pending runtime requests in T3's database. Every 2 minutes it
+  also scans `t3 thread list` for status changes. No model is used.
+- It messages the user's Telegram once per change, with an **Open in T3** button:
+  - a thread needs approval or an answer (a waiting thread still reports `running`)
   - a thread finished, failed or was interrupted
-- Each alert carries the tailnet thread link. Pause it with `launchctl bootout gui/501/local.t3-watch`.
+- Approval cards show the command (or the file to edit) and carry **Approve** / **Decline** buttons. The watcher
+  maps a short id to the request in `~/.t3-watch-requests.json` (0600). Questions only get the link.
+- Pause it with `launchctl bootout gui/501/local.t3-watch`.
+
+### Approval buttons (OpenClaw plugin `dronk-telegram`)
+
+- Code: `ops/openclaw-plugin/` (linked install: `openclaw plugins install --link <dir> --force`, then
+  `openclaw plugins enable dronk-telegram`; after code changes `openclaw plugins reload dronk-telegram`).
+  It runs inside the Gateway and claims Telegram callbacks, so taps never reach the agent:
+  - `t3:a|d:<id>`: only sender 640306272. Runs `~/t3-fork/t3.sh thread respond --decision accept|decline`
+    and edits the card to "✅ Approved" / "❌ Declined", or to the error (for example already answered in T3).
+    `t3:s:<id>` (acceptForSession) is supported but has no button yet.
+  - `more:<id>`: the Details button below.
+- `t3 thread respond` (fork commit 4b41d2f111) answers as the machine owner: it issues a 5-minute
+  `orchestration:read/operate` session, takes a WebSocket ticket and dispatches `runtime-request.respond` over
+  the web app's RPC, then revokes the session. T3's MCP tools refuse permission requests on purpose, so Dronk
+  still cannot approve anything; only the owner's tap or CLI can.
+- Tested 2026-11-14: a Supervised test thread approved via the CLI (command ran, session revoked), and the user
+  approved the LeadScout card from Telegram.
+
+### Details button for Dronk's replies
+
+- The same plugin's `reply_payload_sending` hook splits a Telegram reply at a line `[[details]]`: the short
+  part goes out with a **Details** button, the rest is stored in `~/.openclaw/state/telegram-details.json`
+  (last 300). A tap edits the message to the full text, or replies with the details when they are over 4000
+  characters.
+- Dronk's `SOUL.md` Voice section says when to use it (1-3 short lines first, longer stuff behind the marker).
 
 ## Codex account auto-switch
 

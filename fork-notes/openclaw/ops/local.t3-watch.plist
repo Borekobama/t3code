@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Telegram alerts for T3 threads that need the user (waiting, finished, failed, interrupted).
-  Runs ~/t3-fork/t3-watch.py every 2 minutes; no model use.
+  Telegram alerts for T3 threads that need the user, with approval buttons.
+  Runs ~/t3-fork/t3-watch.py every 15 s (approvals; thread scan every 2 min); no model use.
   Install: cp to ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.t3-watch.plist
   Stop:    launchctl bootout gui/$(id -u)/local.t3-watch
 -->
@@ -16,7 +16,7 @@
     <string>/Users/admin/t3-fork/t3-watch.py</string>
   </array>
   <key>StartInterval</key>
-  <integer>120</integer>
+  <integer>15</integer>
   <key>RunAtLoad</key>
   <true/>
   <key>Nice</key>
