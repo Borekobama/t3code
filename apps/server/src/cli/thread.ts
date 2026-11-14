@@ -13,6 +13,7 @@ import {
   ProjectId,
   ProviderApprovalDecision,
   RunId,
+  RuntimeMode,
   RuntimeRequestId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -900,17 +901,24 @@ const threadSendCommand = Command.make("send", {
 );
 
 /**
- * Answers an approval as the machine owner, over the same RPC the web app uses.
- * The MCP tools refuse permission requests on purpose, so an agent cannot
- * approve its own work; this path is for the owner's own tools.
+ * Dispatches one command as the machine owner, over the same RPC the web app uses.
+ * The MCP tools refuse approvals and mode changes above an agent's ceiling on
+ * purpose, so an agent cannot widen its own access; this path is for the owner's tools.
  */
-const respondToRequest = Effect.fn("cli.thread.respondToRequest")(function* (
+const dispatchAsOwner = Effect.fn("cli.thread.dispatchAsOwner")(function* (
   flags: { readonly baseDir: Option.Option<string> },
-  answer: {
-    readonly threadId: ThreadId;
-    readonly requestId: RuntimeRequestId;
-    readonly decision: ProviderApprovalDecision;
-  },
+  command:
+    | {
+        readonly type: "runtime-request.respond";
+        readonly threadId: ThreadId;
+        readonly requestId: RuntimeRequestId;
+        readonly decision: ProviderApprovalDecision;
+      }
+    | {
+        readonly type: "thread.runtime-mode.set";
+        readonly threadId: ThreadId;
+        readonly runtimeMode: RuntimeMode;
+      },
 ) {
   const logLevel = yield* GlobalFlag.LogLevel;
   const config = yield* resolveCliAuthConfig(flags, logLevel);
@@ -923,7 +931,7 @@ const respondToRequest = Effect.fn("cli.thread.respondToRequest")(function* (
     const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
     const issued = yield* Effect.acquireRelease(
       environmentAuth.issueSession({
-        label: "t3 thread respond",
+        label: `t3 thread ${command.type === "thread.runtime-mode.set" ? "mode" : "respond"}`,
         ttl: Duration.minutes(5),
         scopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
       }),
@@ -963,11 +971,7 @@ const respondToRequest = Effect.fn("cli.thread.respondToRequest")(function* (
     );
     return yield* Effect.gen(function* () {
       const client = yield* RpcClient.make(WsRpcGroup);
-      return yield* client["orchestration.dispatchCommand"]({
-        type: "runtime-request.respond",
-        commandId,
-        ...answer,
-      });
+      return yield* client["orchestration.dispatchCommand"]({ ...command, commandId });
     }).pipe(
       Effect.scoped,
       Effect.provide(protocol),
@@ -1015,12 +1019,35 @@ const threadRespondCommand = Command.make("respond", {
     Effect.gen(function* () {
       const threadId = yield* decodeThreadId(flags.thread);
       const requestId = yield* decodeRequestId(flags.request);
-      const result = yield* respondToRequest(flags, {
+      const result = yield* dispatchAsOwner(flags, {
+        type: "runtime-request.respond",
         threadId,
         requestId,
         decision: flags.decision,
       });
       yield* flags.json ? printJson(result) : Console.log("Answered.");
+    }).pipe(reportThreadErrors),
+  ),
+);
+
+const threadModeCommand = Command.make("mode", {
+  ...projectLocationFlags,
+  thread: threadArgument,
+  mode: Argument.Literals("mode", RuntimeMode.literals).pipe(
+    Argument.withDescription("approval-required asks before each action; full-access never asks."),
+  ),
+  json: jsonFlag,
+}).pipe(
+  Command.withDescription("Set a thread's runtime mode as the machine owner."),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const threadId = yield* decodeThreadId(flags.thread);
+      const result = yield* dispatchAsOwner(flags, {
+        type: "thread.runtime-mode.set",
+        threadId,
+        runtimeMode: flags.mode,
+      });
+      yield* flags.json ? printJson(result) : Console.log(`Mode set to ${flags.mode}.`);
     }).pipe(reportThreadErrors),
   ),
 );
@@ -1087,5 +1114,6 @@ export const threadCommand = Command.make("thread").pipe(
     threadSendCommand,
     threadShowCommand,
     threadRespondCommand,
+    threadModeCommand,
   ]),
 );
