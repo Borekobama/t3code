@@ -124,6 +124,11 @@ Disable the dashboard route:
   - start only Claude or Codex threads, never OpenClaw (that would loop back to Dronk)
   - report with tailnet links
   - it cannot approve T3 permission requests
+- Supervised means `runtimeModeCeiling: approval-required`. T3 lets only full-access clients create projects
+  (`t3_project_create` is `writesEnvironment`), so Dronk gets `capability_denied`. Add the project yourself:
+  `node ~/t3-fork/current/apps/server/dist/bin.mjs project add --base-dir ~/.t3 --title <name> <path>`
+  (load `~/Developer/t3-env.sh </dev/null` first). Full access would also let Dronk start threads that run
+  without approvals.
 - Re-authorize after a revoke or expiry. Stop the Gateway first, because OpenClaw's MCP commands refuse to write
   while it runs:
 
