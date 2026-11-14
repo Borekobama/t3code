@@ -168,7 +168,8 @@ openclaw mcp status --verbose
 - Topics: General (1) for chat, **T3** (5) for the watcher, **Ops** (6) for the project-watch automation
   (`openclaw automations edit <id> --to -1003914415301 --thread-id 6`).
 - OpenClaw's own exec approval prompts still go to the owner DM (`execApprovals.target: dm`).
-- **Project topics** (`~/t3-fork/t3-topics.py`, fork `ops/t3-topics.py`): one topic per T3 project, with an
+- **Project topics** (`~/t3-fork/t3-topics.py`, fork `ops/t3-topics.py`): one topic per T3 project (or per
+  non-coding task with `--task <name>`, map key `task:<name>`), with an
   icon from Telegram's allowed set (`t3-topics.py icons`). `open --project <id|title> [--name] [--emoji]` creates
   the topic (or reopens a closed one) and posts an intro; `close --topic N | --project <id>` posts "Topic closed"
   and closes it; `list` shows the map `~/.t3-watch-topics.json` (0600, lock file next to it). The bot token is

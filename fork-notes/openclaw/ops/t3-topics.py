@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """Project topics in Dronk's Telegram group "OpenClaw - Mac Mini M6".
 
-One forum topic per T3 project. t3-watch.py posts a project's cards to its topic (the T3 topic
-otherwise), and the "Close topic" button in the dronk-telegram plugin calls `close`.
+One forum topic per T3 project, or per non-coding task (a trip, a search) with --task. t3-watch.py
+posts a project's cards to its topic (the T3 topic otherwise), and the "Close topic" button in the
+dronk-telegram plugin calls `close`.
 
   t3-topics.py icons                                   emojis Telegram allows as topic icons
-  t3-topics.py open --project <id|title> [--name N] [--emoji E]   create, or reopen a closed one
-  t3-topics.py close (--topic N | --project <id|title>)
+  t3-topics.py open (--project <id|title> | --task <name>) [--name N] [--emoji E]
+                                                       create, or reopen a closed one
+  t3-topics.py close (--topic N | --project <id|title> | --task <name>)
   t3-topics.py list
 
-Map: ~/.t3-watch-topics.json {"projects": {projectId: {"topic", "name", "closed"}}}. The bot token
-is read here and never printed.
+Map: ~/.t3-watch-topics.json {"projects": {key: {"topic", "name", "closed"}}}; the key is a T3
+project id or "task:<name>". The bot token is read here and never printed.
 """
 import argparse
 import fcntl
@@ -95,8 +97,12 @@ def link(topic):
     return f"https://t.me/c/{str(GROUP)[4:]}/{topic}"
 
 
+def task_key(name):
+    return "task:" + " ".join(name.lower().split())
+
+
 def cmd_open(args):
-    pid, title = project(args.project)
+    pid, title = project(args.project) if args.project else (task_key(args.task), args.task)
     name = (args.name or title)[:128]
     icon_id = None
     if args.emoji:
@@ -117,10 +123,11 @@ def cmd_open(args):
                 params["icon_custom_emoji_id"] = icon_id
             topic = api("createForumTopic", **params)["message_thread_id"]
             entry = projects[pid] = {"topic": topic, "name": name, "closed": False}
-            api("sendMessage", chat_id=GROUP, message_thread_id=topic,
-                text=f"Topic for the T3 project {title}. Its approval cards and job updates land here.")
+            intro = (f"Topic for the T3 project {title}. Its approval cards and job updates land here."
+                     if args.project else f"Topic for: {title}.")
+            api("sendMessage", chat_id=GROUP, message_thread_id=topic, text=intro)
             state = "created"
-    print(json.dumps({"state": state, "project": title, "projectId": pid, "topic": entry["topic"],
+    print(json.dumps({"state": state, "for": title, "key": pid, "topic": entry["topic"],
                       "name": entry["name"], "link": link(entry["topic"])}, ensure_ascii=False))
 
 
@@ -128,11 +135,13 @@ def cmd_close(args):
     with Topics() as projects:
         if args.project:
             pid = project(args.project)[0]
+        elif args.task:
+            pid = task_key(args.task)
         else:
             pid = next((p for p, e in projects.items() if e["topic"] == args.topic), None)
         entry = projects.get(pid)
         if not entry:
-            raise SystemExit("that topic is not a project topic")
+            raise SystemExit("that topic is not a project or task topic")
         if not entry.get("closed"):
             api("sendMessage", chat_id=GROUP, message_thread_id=entry["topic"],
                 text="Topic closed. Ask Dronk in the T3 topic to reopen it when there is new work.")
@@ -143,7 +152,7 @@ def cmd_close(args):
 
 def cmd_list(_args):
     with Topics() as projects:
-        rows = [{"projectId": p, **e, "link": link(e["topic"])} for p, e in projects.items()]
+        rows = [{"key": p, **e, "link": link(e["topic"])} for p, e in projects.items()]
     print(json.dumps(rows, ensure_ascii=False, indent=1))
 
 
@@ -152,13 +161,16 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("icons")
     p = sub.add_parser("open")
-    p.add_argument("--project", required=True)
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--project")
+    g.add_argument("--task")
     p.add_argument("--name")
     p.add_argument("--emoji")
     p = sub.add_parser("close")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--topic", type=int)
     g.add_argument("--project")
+    g.add_argument("--task")
     sub.add_parser("list")
     args = parser.parse_args()
     if args.command == "icons":
