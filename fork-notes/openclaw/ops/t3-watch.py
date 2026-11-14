@@ -6,9 +6,11 @@ database (cheap). Every 2 minutes it also polls `t3 thread list` for every activ
 and alerts on thread status changes. Messages go out through `openclaw message send`.
 No model is called. The first run only records state, so it never floods old threads.
 
-Approval cards carry Approve / Decline buttons. The OpenClaw plugin `dronk-telegram`
-(ops/openclaw-plugin) answers the taps with `t3 thread respond`, using the request map
-this script writes to ~/.t3-watch-requests.json.
+Approval cards carry Approve / Decline / Full access buttons, and a new Supervised job gets a
+card with the Full access button. The OpenClaw plugin `dronk-telegram` (ops/openclaw-plugin)
+answers the taps, using the map this script writes to ~/.t3-watch-requests.json. Full access
+lasts one task: the plugin records the run in ~/.t3-watch-grants.json and this script switches
+the thread back to Supervised when that run ends.
 """
 import hashlib
 import json
@@ -27,6 +29,7 @@ DB = f"{T3_HOME}/userdata/statev2.sqlite"
 OPENCLAW = f"{HOME}/.openclaw/bin/openclaw"
 STATE = f"{HOME}/.t3-watch-state.json"
 REQUESTS = f"{HOME}/.t3-watch-requests.json"
+GRANTS = f"{HOME}/.t3-watch-grants.json"
 TELEGRAM_TO = "640306272"
 LINK_BASE = "https://mac-mini-m6.tail5d38a1.ts.net:8443/"
 THREAD_SCAN_SECONDS = 120
@@ -39,6 +42,7 @@ STATUS = {
     "interrupted": "⏹️ was interrupted",
 }
 QUESTION_KINDS = ("user_input", "question", "elicitation")
+ACTIVE_RUNS = ("queued", "preparing", "starting", "running", "waiting")
 
 
 def query(sql, *args):
@@ -124,6 +128,64 @@ def open_button(url):
     return {"label": "Open in T3", "action": {"type": "url", "url": url}}
 
 
+def full_access_button(short):
+    return {"label": "⚡ Full access for this task", "action": {"type": "callback", "value": f"t3:f:{short}"}}
+
+
+def short_id(value):
+    return hashlib.sha256(value.encode()).hexdigest()[:10]
+
+
+def supervised_jobs():
+    """Supervised threads with an active run: these are the ones that will keep asking."""
+    rows = query(
+        "select t.thread_id, t.title, p.title from orchestration_v2_projection_threads t"
+        " left join projection_projects p on p.project_id = t.project_id"
+        " where t.runtime_mode = 'approval-required' and t.archived_at is null and t.deleted_at is null"
+        " and exists (select 1 from orchestration_v2_projection_runs r where r.thread_id = t.thread_id"
+        f" and r.status in ({','.join('?' * len(ACTIVE_RUNS))}))",
+        *ACTIVE_RUNS,
+    )
+    return {tid: (title, project) for tid, title, project in rows}
+
+
+def job_card(tid, title, project, env_id):
+    body = (
+        f"▶️ **{esc(title or 'T3 thread')}** · {esc(project or 'unknown project')}\n"
+        "started in Supervised mode: every command waits for your approval."
+    )
+    short = short_id(f"job:{tid}")
+    rows = [[full_access_button(short)], [open_button(thread_link(env_id, tid))]]
+    return body, rows, (short, {"threadId": tid, "text": body, "at": time.time()})
+
+
+def revert_grants():
+    """Back to Supervised once the run that got full access has ended."""
+    try:
+        grants = json.load(open(GRANTS))
+    except (OSError, ValueError):
+        return
+    changed = False
+    for tid, grant in list(grants.items()):
+        row = query("select status from orchestration_v2_projection_runs where run_id = ?", grant.get("runId") or "")
+        status = row[0][0] if row else None
+        if status in ACTIVE_RUNS or (status is None and time.time() - grant.get("at", 0) / 1000 < 3600):
+            continue
+        out = subprocess.run(
+            [NODE, T3, "thread", "mode", "--base-dir", T3_HOME, tid, "approval-required"],
+            capture_output=True, text=True, timeout=90,
+        )
+        if out.returncode == 0:
+            print(f"{time.strftime('%H:%M:%S')} back to Supervised: {tid} (run {status})")
+            del grants[tid]
+            changed = True
+        else:
+            print(f"{time.strftime('%H:%M:%S')} revert failed for {tid}: {out.stderr.strip()[:200]}", file=sys.stderr)
+    if changed:
+        # shortcut: the plugin may write a grant between our read and this write; taps are rare.
+        save(GRANTS, grants)
+
+
 def request_card(rid, tid, kind, payload_json, title, project, env_id):
     head = f"**{esc(title or 'T3 thread')}** · {esc(project or 'unknown project')}"
     link = thread_link(env_id, tid)
@@ -134,12 +196,13 @@ def request_card(rid, tid, kind, payload_json, title, project, env_id):
     if action:
         shown = action if len(action) <= COMMAND_MAX else action[:COMMAND_MAX] + " …"
         body += f"\n```\n{shown.replace('```', '` ` `')}\n```"
-    short = hashlib.sha256(rid.encode()).hexdigest()[:10]
+    short = short_id(rid)
     buttons = [
         [
             {"label": "✅ Approve", "action": {"type": "callback", "value": f"t3:a:{short}"}, "style": "success"},
             {"label": "Decline", "action": {"type": "callback", "value": f"t3:d:{short}"}, "style": "danger"},
         ],
+        [full_access_button(short)],
         [open_button(link)],
     ]
     return body, buttons, (short, {"threadId": tid, "requestId": rid, "text": body, "at": time.time()})
@@ -188,6 +251,13 @@ def main():
                     text = f"{STATUS[status]}: **{esc(t.get('title') or 'thread')}** · {esc(project_title)}"
                     alerts.append((text, [[open_button(url)]], None))
 
+    revert_grants()
+    jobs = supervised_jobs()
+    seen_jobs = set(state.get("jobs", []))
+    if previous is not None:
+        for tid, (title, project) in jobs.items():
+            if tid not in seen_jobs:
+                alerts.append(job_card(tid, title, project, env_id))
     pending = pending_requests()
     if previous is not None:
         for rid, (tid, kind, payload_json, title, project) in pending.items():
@@ -209,6 +279,8 @@ def main():
     save(STATE, {
         "threads": current,
         "requests": sorted(pending),
+        # A job alerts once while it is a Supervised thread with an active run.
+        "jobs": sorted(seen_jobs | set(jobs)),
         "env": env_id,
         "scannedAt": time.time() if scan else state.get("scannedAt", 0),
     })

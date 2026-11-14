@@ -151,8 +151,10 @@ openclaw mcp status --verbose
 - It messages the user's Telegram once per change, with an **Open in T3** button:
   - a thread needs approval or an answer (a waiting thread still reports `running`)
   - a thread finished, failed or was interrupted
-- Approval cards show the command (or the file to edit) and carry **Approve** / **Decline** buttons. The watcher
-  maps a short id to the request in `~/.t3-watch-requests.json` (0600). Questions only get the link.
+- Approval cards show the command (or the file to edit) and carry **Approve** / **Decline** / **⚡ Full access for
+  this task** buttons. A Supervised thread with an active run also gets one "started" card with the Full access
+  button. The watcher maps a short id to the request or thread in `~/.t3-watch-requests.json` (0600). Questions
+  only get the link.
 - Pause it with `launchctl bootout gui/501/local.t3-watch`.
 
 ### Approval buttons (OpenClaw plugin `dronk-telegram`)
@@ -163,7 +165,13 @@ openclaw mcp status --verbose
   - `t3:a|d:<id>`: only sender 640306272. Runs `~/t3-fork/t3.sh thread respond --decision accept|decline`
     and edits the card to "✅ Approved" / "❌ Declined", or to the error (for example already answered in T3).
     `t3:s:<id>` (acceptForSession) is supported but has no button yet.
+  - `t3:f:<id>`: full access for the current task. Claude sessions cannot change mode in place: T3 restarts the
+    session and the active run fails (tested 2026-11-14). So the plugin runs `t3 thread mode <thread>
+    full-access`, then `t3 thread send` with a "continue where you stopped" message, and records the new run in
+    `~/.t3-watch-grants.json`. When that run ends, the watcher runs `t3 thread mode <thread> approval-required`
+    (log line "back to Supervised"). Only works while the thread has an active run.
   - `more:<id>`: the Details button below.
+- `t3 thread mode <thread> <mode>` (fork commit 24e6b48ce0) uses the same owner path.
 - `t3 thread respond` (fork commit 4b41d2f111) answers as the machine owner: it issues a 5-minute
   `orchestration:read/operate` session, takes a WebSocket ticket and dispatches `runtime-request.respond` over
   the web app's RPC, then revokes the session. T3's MCP tools refuse permission requests on purpose, so Dronk
