@@ -1,13 +1,22 @@
 import {
+  AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
+  CommandId,
+  ORCHESTRATION_PROTOCOL_HEADER,
+  ORCHESTRATION_PROTOCOL_QUERY_PARAM,
+  ORCHESTRATION_PROTOCOL_VERSION,
   OrchestratorMcpFailure,
   OrchestratorMcpThreadListResult,
   OrchestratorMcpThreadReadResult,
   OrchestratorMcpThreadSendResult,
   OrchestratorMcpThreadWaitResult,
   ProjectId,
+  ProviderApprovalDecision,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   TrimmedNonEmptyString,
+  WsRpcGroup,
   type OrchestratorMcpThreadListItem,
   type OrchestratorMcpThreadRun,
   type OrchestratorMcpThreadStatus,
@@ -15,6 +24,7 @@ import {
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Console from "effect/Console";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -26,6 +36,10 @@ import * as Schema from "effect/Schema";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
 import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
+import * as SecureRandom from "effect/crypto/SecureRandom";
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
+import { RpcClient, RpcSerialization } from "effect/rpc";
+import { Socket } from "effect/socket";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
@@ -885,6 +899,132 @@ const threadSendCommand = Command.make("send", {
   ),
 );
 
+/**
+ * Answers an approval as the machine owner, over the same RPC the web app uses.
+ * The MCP tools refuse permission requests on purpose, so an agent cannot
+ * approve its own work; this path is for the owner's own tools.
+ */
+const respondToRequest = Effect.fn("cli.thread.respondToRequest")(function* (
+  flags: { readonly baseDir: Option.Option<string> },
+  answer: {
+    readonly threadId: ThreadId;
+    readonly requestId: RuntimeRequestId;
+    readonly decision: ProviderApprovalDecision;
+  },
+) {
+  const logLevel = yield* GlobalFlag.LogLevel;
+  const config = yield* resolveCliAuthConfig(flags, logLevel);
+  return yield* Effect.gen(function* () {
+    const runtimeState = yield* readLiveServerRuntimeState(config.serverRuntimeStatePath);
+    if (Option.isNone(runtimeState)) {
+      return yield* new ThreadServerNotRunningError({ baseDir: config.baseDir });
+    }
+    const origin = runtimeState.value.origin;
+    const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
+    const issued = yield* Effect.acquireRelease(
+      environmentAuth.issueSession({
+        label: "t3 thread respond",
+        ttl: Duration.minutes(5),
+        scopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+      }),
+      (session) =>
+        environmentAuth.revokeSession(session.sessionId).pipe(Effect.ignore({ log: true })),
+    );
+    const http = yield* HttpClient.HttpClient;
+    const { ticket } = yield* http
+      .execute(
+        HttpClientRequest.post(new URL("/api/auth/websocket-ticket", origin).href).pipe(
+          HttpClientRequest.bearerToken(issued.token),
+          HttpClientRequest.setHeader(
+            ORCHESTRATION_PROTOCOL_HEADER,
+            String(ORCHESTRATION_PROTOCOL_VERSION),
+          ),
+        ),
+      )
+      .pipe(
+        Effect.flatMap(HttpClientResponse.filterStatusOk),
+        Effect.flatMap(HttpClientResponse.schemaBodyJson(Schema.Struct({ ticket: Schema.String }))),
+        Effect.mapError((cause) => new ThreadServerUnreachableError({ origin, cause })),
+      );
+    const random = yield* SecureRandom.SecureRandom;
+    const commandId = CommandId.make(`cli:${yield* random.uuidV4()}`);
+    const url = new URL("/ws", origin);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.searchParams.set(
+      ORCHESTRATION_PROTOCOL_QUERY_PARAM,
+      String(ORCHESTRATION_PROTOCOL_VERSION),
+    );
+    url.searchParams.set("wsTicket", ticket);
+    const protocol = RpcClient.layerProtocolSocket().pipe(
+      Layer.provide(
+        Socket.layerWebSocket(url.href).pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal)),
+      ),
+      Layer.provide(RpcSerialization.layerJson),
+    );
+    return yield* Effect.gen(function* () {
+      const client = yield* RpcClient.make(WsRpcGroup);
+      return yield* client["orchestration.dispatchCommand"]({
+        type: "runtime-request.respond",
+        commandId,
+        ...answer,
+      });
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(protocol),
+      Effect.mapError(
+        (error) =>
+          new ThreadToolFailedError({
+            tool: "orchestration.dispatchCommand",
+            detail: "message" in error && error.message ? error.message : error._tag,
+          }),
+      ),
+    );
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      Layer.merge(
+        EnvironmentAuth.layerRuntime.pipe(
+          Layer.provide(ServerConfig.layer(config)),
+          Layer.provide(Layer.succeed(References.MinimumLogLevel, config.logLevel)),
+        ),
+        FetchHttpClient.layer,
+      ),
+    ),
+  );
+});
+
+const decodeRequestIdValue = Schema.decodeEffect(RuntimeRequestId);
+const decodeRequestId = (value: string) =>
+  decodeRequestIdValue(value.trim()).pipe(
+    Effect.mapError(() => new ThreadUsageError({ detail: `'${value}' is not a request id.` })),
+  );
+
+const threadRespondCommand = Command.make("respond", {
+  ...projectLocationFlags,
+  thread: threadArgument,
+  request: Argument.String("request").pipe(Argument.withDescription("Pending request id.")),
+  decision: Flag.Literals("decision", ProviderApprovalDecision.literals).pipe(
+    Flag.withDescription(
+      "accept allows it once; acceptForSession also allows the same kind for the rest of the session.",
+    ),
+  ),
+  json: jsonFlag,
+}).pipe(
+  Command.withDescription("Answer a pending approval in a thread as the machine owner."),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const threadId = yield* decodeThreadId(flags.thread);
+      const requestId = yield* decodeRequestId(flags.request);
+      const result = yield* respondToRequest(flags, {
+        threadId,
+        requestId,
+        decision: flags.decision,
+      });
+      yield* flags.json ? printJson(result) : Console.log("Answered.");
+    }).pipe(reportThreadErrors),
+  ),
+);
+
 const threadShowCommand = Command.make("show", {
   ...projectLocationFlags,
   thread: threadArgument,
@@ -946,5 +1086,6 @@ export const threadCommand = Command.make("thread").pipe(
     threadStartCommand,
     threadSendCommand,
     threadShowCommand,
+    threadRespondCommand,
   ]),
 );
