@@ -30,7 +30,8 @@ OPENCLAW = f"{HOME}/.openclaw/bin/openclaw"
 STATE = f"{HOME}/.t3-watch-state.json"
 REQUESTS = f"{HOME}/.t3-watch-requests.json"
 GRANTS = f"{HOME}/.t3-watch-grants.json"
-TELEGRAM_TO = "640306272"
+# Forum topic "T3" in the group "OpenClaw - Mac Mini M6" (owner-only); was the owner DM 640306272.
+TELEGRAM_TO = "-1003914415301:topic:5"
 LINK_BASE = "https://mac-mini-m6.tail5d38a1.ts.net:8443/"
 THREAD_SCAN_SECONDS = 120
 COMMAND_MAX = 700

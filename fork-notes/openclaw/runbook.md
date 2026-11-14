@@ -148,7 +148,9 @@ openclaw mcp status --verbose
 - LaunchAgent `local.t3-watch` runs `~/t3-fork/t3-watch.py` every 15 s (log `~/Library/Logs/t3-watch.log`,
   state `~/.t3-watch-state.json`). Each run checks pending runtime requests in T3's database. Every 2 minutes it
   also scans `t3 thread list` for status changes. No model is used.
-- It messages the user's Telegram once per change, with an **Open in T3** button:
+- It posts to the **T3** topic (thread 5) of the owner-only forum group "OpenClaw - Mac Mini M6"
+  (`-1003914415301`, `TELEGRAM_TO` in the script; before 2026-11-14 it was the owner DM). It posts once per
+  change, with an **Open in T3** button:
   - a thread needs approval or an answer (a waiting thread still reports `running`)
   - a thread finished, failed or was interrupted
 - Approval cards show the command (or the file to edit) and carry **Approve** / **Decline** / **⚡ Full access for
@@ -156,6 +158,18 @@ openclaw mcp status --verbose
   button. The watcher maps a short id to the request or thread in `~/.t3-watch-requests.json` (0600). Questions
   only get the link.
 - Pause it with `launchctl bootout gui/501/local.t3-watch`.
+
+### Telegram topic group
+
+- Group "OpenClaw - Mac Mini M6", id `-1003914415301`, forum topics on. Dronk's bot is admin with Manage Topics.
+- OpenClaw config: `channels.telegram.groups["-1003914415301"].requireMention: false`. `groupAllowFrom` is unset,
+  so only `allowFrom` (owner 640306272) may talk to Dronk there. Each topic is its own session
+  (`...:topic:<id>`); topics share only the workspace memory files.
+- Topics: General (1) for chat, **T3** (5) for the watcher, **Ops** (6) for the project-watch automation
+  (`openclaw automations edit <id> --to -1003914415301 --thread-id 6`).
+- OpenClaw's own exec approval prompts still go to the owner DM (`execApprovals.target: dm`).
+- DM topics (BotFather threaded mode) did not work on 2026-11-14: `getMe` kept `has_topics_enabled: false`,
+  `createForumTopic` in the DM failed with "the chat is not a forum", and a user-started thread hung.
 
 ### Approval buttons (OpenClaw plugin `dronk-telegram`)
 
