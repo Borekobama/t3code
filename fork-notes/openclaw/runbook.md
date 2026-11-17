@@ -225,6 +225,11 @@ openclaw mcp status --verbose
 - The 99 % pre-switch needs 5-hour and weekly window readings. Managed ChatGPT accounts report none today,
   so in practice only the switch after a limit fires.
 - Disable it in Settings → Threads.
+- Fixed 2026-11-17 (`090ac19188`): after a switch, the new account failed every resume with "This conversation
+  is open in another Codex client" (Codex: `thread … already has an active writer`). Both accounts share one
+  Codex home, and the old account's process kept the conversation loaded: the detach looked for the thread's
+  row under the old session after the switch had already moved it. Detach now also unloads what the session
+  holds. If it shows up again, restarting T3 (`launchctl kickstart -k gui/501/local.t3code-fork`) releases it.
 
 ## Skills on the mini
 
