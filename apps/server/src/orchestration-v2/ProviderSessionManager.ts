@@ -3045,6 +3045,13 @@ export const layerWithOptions = (
                   { concurrency: 1, discard: true },
                 );
               }
+              // A Codex account switch rebinds the thread's provider-thread row to the new
+              // account's session first, so the projection misses what this process still holds;
+              // left loaded, it keeps the writer lock and the new account's resume fails.
+              const held = currentEntry.idleThreadUnloads.get(input.threadId)?.providerThread;
+              if (held !== undefined && !detachedProviderThreads.some((t) => t.id === held.id)) {
+                detachedProviderThreads = [...detachedProviderThreads, held];
+              }
             }
             const detachResult = yield* Ref.modify(sessions, (current) => {
               const entry = current.get(key);
